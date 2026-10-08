@@ -11,6 +11,8 @@ interface GenerateConfig {
   ideaCount: number
   customPrompt: string | null
   isCustom: boolean
+  dedupEnabled: boolean
+  dedupThreshold: number
 }
 
 const SECTORS = ['defense/gov', 'logistics', 'devtools/infra', 'healthcare', 'fintech', 'cybersecurity', 'hr/workforce', 'manufacturing', 'data/analytics', 'edtech', 'proptech', 'legaltech', 'energy/climate', 'retail']
@@ -181,6 +183,36 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
               ))}
             </div>
           </div>
+        </div>
+
+        {/* Semantic dedup */}
+        <div className="border-t border-zinc-800 pt-4">
+          <label className="flex items-center gap-2 mb-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.dedupEnabled}
+              onChange={e => update({ dedupEnabled: e.target.checked })}
+              className="accent-zinc-400"
+            />
+            <span className="text-xs font-mono text-zinc-400">Semantic dedup — reject ideas too similar in meaning to past ones</span>
+          </label>
+          {config.dedupEnabled && (
+            <div className="pl-6">
+              <div className="flex justify-between items-baseline mb-1">
+                <span className="text-xs font-mono text-zinc-500">
+                  Similarity threshold <span className="text-zinc-600">· lower = stricter (drops more)</span>
+                </span>
+                <span className="text-xs font-mono text-zinc-300">{config.dedupThreshold.toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                min={0.7} max={0.95} step={0.01}
+                value={config.dedupThreshold}
+                onChange={e => update({ dedupThreshold: parseFloat(e.target.value) })}
+                className="w-full accent-zinc-400"
+              />
+            </div>
+          )}
         </div>
 
         {/* Live prompt preview / editor */}

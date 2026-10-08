@@ -98,16 +98,19 @@ export default function Home() {
   }
 
   const handleAnalyze = async (id: string) => {
-    setIdeas(prev => prev.map(i => i.id === id ? { ...i, status: 'analyzing' as IdeaStatus } : i))
-    addLog('info', `Analyzing idea ${id.slice(0, 8)}…`)
+    // Background job: optimistically show analyzing, clear any prior error, then
+    // let polling pick up progress (analyst -> vc) and the final state.
+    setIdeas(prev => prev.map(i => i.id === id
+      ? { ...i, status: 'analyzing' as IdeaStatus, analysis_stage: 'analyst', analysis_error: null }
+      : i))
+    addLog('info', `Analysis started for ${id.slice(0, 8)} (analyst → VC)…`)
     try {
       const res = await fetch(`/api/ideas/${id}/analyze`, { method: 'POST' })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-      addLog('ok', `Analysis complete for ${id.slice(0, 8)}`)
-      setIdeas(prev => prev.map(i => i.id === id ? body : i))
+      if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`)
+      // Don't await completion — poll handles it. Refetch shortly to catch fast failures.
+      setTimeout(fetchIdeas, 1500)
     } catch (e) {
-      addLog('error', `Analysis failed: ${e instanceof Error ? e.message : e}`)
+      addLog('error', `Could not start analysis: ${e instanceof Error ? e.message : e}`)
       await fetchIdeas()
     }
   }

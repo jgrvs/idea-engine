@@ -97,8 +97,26 @@ export interface Idea {
   prototype_completed_at: string | null
   dismissed_at: string | null
   dismiss_reason: string | null
+  analysis_stage: string | null
+  analysis_error: string | null
   analysis?: Analysis
+  vc_review?: VcReview
   prototype?: Prototype
+}
+
+export type FundVerdict = 'fund' | 'explore' | 'pass'
+
+export interface VcReview {
+  id: string
+  idea_id: string
+  strengths: string[] | null
+  weaknesses: string[] | null
+  key_concerns: string[] | null
+  would_fund: FundVerdict | null
+  needs_to_be_true: string[] | null
+  verdict_rationale: string | null
+  tokens_used: number
+  created_at: string
 }
 
 export interface Analysis {

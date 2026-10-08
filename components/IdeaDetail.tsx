@@ -1,10 +1,61 @@
 'use client'
 
 import { useState } from 'react'
-import type { Idea, IdeaStatus } from '@/lib/types'
+import type { Idea, IdeaStatus, VcReview } from '@/lib/types'
 import { StatusBadge } from './StatusBadge'
 import AnalysisView from './AnalysisView'
 import PrototypeView from './PrototypeView'
+
+const FUND_STYLE: Record<string, string> = {
+  fund: 'bg-green-950 text-green-400 border-green-900',
+  explore: 'bg-yellow-950 text-yellow-400 border-yellow-900',
+  pass: 'bg-red-950 text-red-400 border-red-900',
+}
+
+function VcList({ label, items, marker }: { label: string; items: string[] | null; marker: string }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div>
+      <p className="text-xs font-mono text-zinc-500 mb-2">{label}</p>
+      <ul className="space-y-1.5">
+        {items.map((it, i) => (
+          <li key={i} className="text-sm text-zinc-300 flex gap-2">
+            <span className="shrink-0 text-zinc-600">{marker}</span>{it}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function VcReviewView({ review }: { review: VcReview }) {
+  return (
+    <div className="border-t border-zinc-800 pt-6">
+      <div className="flex items-center gap-3 mb-4">
+        <h3 className="text-sm font-sans font-bold text-zinc-200">VC Review</h3>
+        {review.would_fund && (
+          <span className={`text-xs font-mono px-2 py-0.5 rounded border ${FUND_STYLE[review.would_fund] ?? 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>
+            would {review.would_fund}
+          </span>
+        )}
+      </div>
+
+      {review.verdict_rationale && (
+        <p className="text-sm text-zinc-300 mb-5">{review.verdict_rationale}</p>
+      )}
+
+      <div className="grid grid-cols-2 gap-5 mb-5">
+        <VcList label="Strengths" items={review.strengths} marker="+" />
+        <VcList label="Weaknesses" items={review.weaknesses} marker="−" />
+      </div>
+
+      <div className="space-y-5">
+        <VcList label="Key concerns (most likely to kill it)" items={review.key_concerns} marker="⚑" />
+        <VcList label="What would need to be true to invest" items={review.needs_to_be_true} marker="→" />
+      </div>
+    </div>
+  )
+}
 
 interface Props {
   idea: Idea
@@ -85,6 +136,24 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
         )}
       </div>
 
+      {/* Analysis error banner */}
+      {idea.analysis_error && idea.status !== 'analyzing' && (
+        <div className="mb-6 rounded border border-red-900 bg-red-950/40 px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-mono text-red-400 mb-1">Analysis failed</p>
+              <p className="text-xs font-mono text-red-300/80 break-words">{idea.analysis_error}</p>
+            </div>
+            <button
+              onClick={onAnalyze}
+              className="shrink-0 text-xs font-mono px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950 transition-colors"
+            >
+              ↻ Retry
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Tab nav */}
       <div className="flex gap-1 border-b border-zinc-800 mb-6">
         {(['brief', 'analysis', 'prototype'] as const).map(t => {
@@ -133,7 +202,10 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
       )}
 
       {tab === 'analysis' && idea.analysis && (
-        <AnalysisView analysis={idea.analysis} />
+        <div className="space-y-8">
+          <AnalysisView analysis={idea.analysis} />
+          {idea.vc_review && <VcReviewView review={idea.vc_review} />}
+        </div>
       )}
 
       {tab === 'prototype' && idea.prototype && (
@@ -220,8 +292,30 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
       {isProcessing && (
         <div className="mt-8 pt-6 border-t border-zinc-800">
           <p className="text-sm font-mono text-amber-400">
-            {idea.status === 'analyzing' ? '⟳ Running deep analysis…' : '⟳ Building prototype…'}
+            {idea.status === 'analyzing'
+              ? idea.analysis_stage === 'vc'
+                ? '⟳ VC review — pressure-testing the analysis…'
+                : '⟳ Analyst — researching market, competitors, feasibility…'
+              : '⟳ Building prototype…'}
           </p>
+          {idea.status === 'analyzing' && (
+            <div className="flex gap-2 mt-3">
+              {(['analyst', 'vc'] as const).map(s => (
+                <span
+                  key={s}
+                  className={`text-xs font-mono px-2 py-0.5 rounded ${
+                    idea.analysis_stage === s
+                      ? 'bg-amber-950 text-amber-400'
+                      : (s === 'analyst' && idea.analysis_stage === 'vc')
+                        ? 'bg-green-950 text-green-500'
+                        : 'bg-zinc-900 text-zinc-600'
+                  }`}
+                >
+                  {s === 'analyst' ? '1 · Analyst' : '2 · VC review'}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -4,7 +4,9 @@ import { DEFAULT_GENERATE_CONFIG, composeGeneratePrompt, type GenerateConfig } f
 
 export async function GET() {
   try {
-    const config = getConfig<GenerateConfig>('generate', DEFAULT_GENERATE_CONFIG)
+    // Merge over defaults so configs saved before newer fields (dedup, etc.)
+    // still return complete, valid values to the UI.
+    const config = { ...DEFAULT_GENERATE_CONFIG, ...getConfig<GenerateConfig>('generate', DEFAULT_GENERATE_CONFIG) }
     return NextResponse.json({ config, preview: composeGeneratePrompt(config) })
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 })

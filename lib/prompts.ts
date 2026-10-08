@@ -7,6 +7,8 @@ export interface GenerateConfig {
   ideaCount: number
   customPrompt: string | null
   isCustom: boolean
+  dedupEnabled: boolean
+  dedupThreshold: number  // cosine similarity at/above which a candidate is a dupe
 }
 
 export const DEFAULT_GENERATE_CONFIG: GenerateConfig = {
@@ -18,6 +20,8 @@ export const DEFAULT_GENERATE_CONFIG: GenerateConfig = {
   ideaCount: 15,
   customPrompt: null,
   isCustom: false,
+  dedupEnabled: true,
+  dedupThreshold: 0.82,
 }
 
 const SCHEMA_BLOCK = `Return a JSON array of exactly the requested number of ideas. Each must follow this schema exactly:`
@@ -45,14 +49,27 @@ Be a HARSH, calibrated grader on the score_ fields — do not inflate. Most idea
 
 Vary sectors and models across the batch. Return ONLY the JSON array — no markdown, no explanation.`
 
+// A compact "don't repeat these" block built from prior ideas. Kept short
+// (title — tagline) so it stays cheap even with a few hundred entries.
+function avoidBlock(avoid: string[]): string {
+  if (!avoid.length) return ''
+  return [
+    '',
+    'AVOID repeats: do NOT generate ideas that are the same as, or a close variant of, any of these previously-seen ideas. Pick genuinely different problems — different sub-sector, different wedge, different buyer:',
+    ...avoid.map(a => `- ${a}`),
+  ].join('\n')
+}
+
 // Build the system prompt live from selector state. The selectors compose the
 // "Generate ideas that…" guidance; the schema is always appended verbatim.
-export function composeGeneratePrompt(config: GenerateConfig): string {
+// `avoid` is an optional list of "title — tagline" strings to steer away from.
+export function composeGeneratePrompt(config: GenerateConfig, avoid: string[] = []): string {
   if (config.isCustom && config.customPrompt) {
     // User has detached and hand-edited — use their prompt, but still guarantee
     // the schema is present so generation stays parseable.
     const hasSchema = config.customPrompt.includes('"market_sector"')
-    return hasSchema ? config.customPrompt : `${config.customPrompt}\n\n${SCHEMA_BLOCK}\n\n${SCHEMA_TAIL}`
+    const base = hasSchema ? config.customPrompt : `${config.customPrompt}\n\n${SCHEMA_BLOCK}\n\n${SCHEMA_TAIL}`
+    return base + avoidBlock(avoid)
   }
 
   const lines: string[] = [
@@ -75,7 +92,7 @@ export function composeGeneratePrompt(config: GenerateConfig): string {
   if (config.focus.trim())
     lines.push(`- Extra focus from the founder: ${config.focus.trim()}`)
 
-  lines.push('', SCHEMA_BLOCK, '', SCHEMA_TAIL)
+  lines.push(avoidBlock(avoid), '', SCHEMA_BLOCK, '', SCHEMA_TAIL)
   return lines.join('\n')
 }
 
@@ -101,6 +118,22 @@ Return this exact JSON:
   "opportunities": ["Opportunity 1 (1 sentence)", "Opportunity 2", "Opportunity 3"],
   "recommendation": "<exactly one of: go | explore | no-go>",
   "recommendation_rationale": "2-3 sentences explaining the verdict"
+}
+
+Return ONLY the JSON object — no markdown, no explanation.`
+
+export const VC_SYSTEM = `You are a skeptical, seasoned early-stage VC partner. You are reviewing a startup idea AND a junior analyst's due-diligence writeup of it. Your job is to pressure-test the analyst's optimism, not to cheerlead.
+
+Be blunt. Surface the things a founder doesn't want to hear. Where the analyst was rosy, push back. Where the idea is genuinely strong, say so concisely.
+
+You will receive the idea and the analyst's findings. Return this exact JSON:
+{
+  "strengths": ["Concrete strength 1 (1 sentence)", "Strength 2", "Strength 3"],
+  "weaknesses": ["Concrete weakness or flaw 1 (1 sentence)", "Weakness 2", "Weakness 3"],
+  "key_concerns": ["The 1-3 things most likely to kill this (1 sentence each)"],
+  "would_fund": "<exactly one of: fund | explore | pass>",
+  "needs_to_be_true": ["Assumption that must hold for this to be a fundable business", "..."],
+  "verdict_rationale": "2-3 sentences: as a VC, would you write a check, and why or why not?"
 }
 
 Return ONLY the JSON object — no markdown, no explanation.`

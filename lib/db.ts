@@ -64,7 +64,10 @@ function initSchema(db: Database.Database) {
       prototype_started_at TEXT,
       prototype_completed_at TEXT,
       dismissed_at TEXT,
-      dismiss_reason TEXT
+      dismiss_reason TEXT,
+      analysis_stage TEXT,
+      analysis_error TEXT,
+      embedding BLOB
     );
 
     CREATE TABLE IF NOT EXISTS analyses (
@@ -84,6 +87,19 @@ function initSchema(db: Database.Database) {
       opportunities TEXT,
       recommendation TEXT,
       recommendation_rationale TEXT,
+      tokens_used INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS vc_reviews (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT NOT NULL REFERENCES ideas(id),
+      strengths TEXT,
+      weaknesses TEXT,
+      key_concerns TEXT,
+      would_fund TEXT,
+      needs_to_be_true TEXT,
+      verdict_rationale TEXT,
       tokens_used INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
@@ -141,6 +157,30 @@ function initSchema(db: Database.Database) {
   for (const col of ['score_technical', 'score_deployment', 'score_barrier', 'score_appetite', 'score_market_size']) {
     if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} REAL`)
   }
+  for (const col of ['analysis_stage', 'analysis_error']) {
+    if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} TEXT`)
+  }
+  if (!ideaCols.has('embedding')) db.exec(`ALTER TABLE ideas ADD COLUMN embedding BLOB`)
+}
+
+// ── Embeddings (semantic dedup) ─────────────────────────────────────────────
+
+export function setIdeaEmbedding(ideaId: string, blob: Buffer) {
+  getDb().prepare(`UPDATE ideas SET embedding = ? WHERE id = ?`).run(blob, ideaId)
+}
+
+// All stored idea embeddings (for similarity comparison at generation time).
+export function getStoredEmbeddings(): { id: string; embedding: Buffer }[] {
+  return getDb()
+    .prepare(`SELECT id, embedding FROM ideas WHERE embedding IS NOT NULL`)
+    .all() as { id: string; embedding: Buffer }[]
+}
+
+// Ideas missing an embedding (for backfill).
+export function getIdeasNeedingEmbedding(): { id: string; title: string; tagline: string | null; problem: string | null }[] {
+  return getDb()
+    .prepare(`SELECT id, title, tagline, problem FROM ideas WHERE embedding IS NULL`)
+    .all() as { id: string; title: string; tagline: string | null; problem: string | null }[]
 }
 
 export function logUsage(
@@ -237,24 +277,28 @@ export function getIdeaWithRelations(ideaId: string) {
 
   const analysis = db.prepare('SELECT * FROM analyses WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
   const prototype = db.prepare('SELECT * FROM prototypes WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
+  const vcReview = db.prepare('SELECT * FROM vc_reviews WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
 
-  return deserializeIdea(row, analysis, prototype)
+  return deserializeIdea(row, analysis, prototype, vcReview)
 }
 
 export function deserializeIdea(
   row: Record<string, unknown>,
   analysis?: Record<string, unknown>,
-  prototype?: Record<string, unknown>
+  prototype?: Record<string, unknown>,
+  vcReview?: Record<string, unknown>
 ) {
   const idea: Record<string, unknown> = {
     ...row,
     named_competitors: row.named_competitors ? JSON.parse(row.named_competitors as string) : null,
   }
+  // Never ship the raw embedding BLOB to the client.
+  delete idea.embedding
 
   // Recompute the composite viability from sub-scores using the live config, so
   // re-tuning weights/target re-ranks instantly. Ideas without sub-scores
   // (generated before this scoring existed) keep their stored score.
-  const cfg = getConfig<ScoringConfig>('scoring', DEFAULT_SCORING)
+  const cfg = { ...DEFAULT_SCORING, ...getConfig<ScoringConfig>('scoring', DEFAULT_SCORING) }
   const computed = computeViability({
     technical: row.score_technical as number | null,
     deployment: row.score_deployment as number | null,
@@ -278,6 +322,17 @@ export function deserializeIdea(
       ...prototype,
       file_tree: prototype.file_tree ? JSON.parse(prototype.file_tree as string) : null,
       stack: prototype.stack ? JSON.parse(prototype.stack as string) : null,
+    }
+  }
+
+  if (vcReview) {
+    const arr = (v: unknown) => (v ? JSON.parse(v as string) : null)
+    idea.vc_review = {
+      ...vcReview,
+      strengths: arr(vcReview.strengths),
+      weaknesses: arr(vcReview.weaknesses),
+      key_concerns: arr(vcReview.key_concerns),
+      needs_to_be_true: arr(vcReview.needs_to_be_true),
     }
   }
 
