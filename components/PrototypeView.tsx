@@ -33,7 +33,7 @@ export default function PrototypeView({ prototype: proto }: { prototype: Prototy
     <div className="space-y-4">
       {/* Directory path */}
       {proto.directory_path && (
-        <div className="flex items-center gap-2 bg-zinc-900 rounded px-3 py-2">
+        <div className="flex items-center gap-2 panel px-3 py-2">
           <span className="text-xs font-mono text-zinc-400 flex-1 truncate">
             {proto.directory_path}
           </span>
@@ -68,7 +68,7 @@ export default function PrototypeView({ prototype: proto }: { prototype: Prototy
                 onClick={() => setSelectedFile(f)}
                 className={`w-full text-left px-3 py-1.5 text-xs font-mono truncate transition-colors ${
                   selectedFile?.path === f.path
-                    ? 'bg-zinc-700 text-zinc-100'
+                    ? 'chip-on'
                     : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
                 }`}
               >
@@ -79,7 +79,7 @@ export default function PrototypeView({ prototype: proto }: { prototype: Prototy
           </div>
 
           {/* Code viewer */}
-          <div className="flex-1 overflow-auto bg-[#0d0d0d]">
+          <div className="flex-1 overflow-auto bg-zinc-950">
             {selectedFile ? (
               <pre className="text-xs font-mono text-zinc-300 p-4 leading-relaxed whitespace-pre">
                 {selectedFile.content}
@@ -99,7 +99,7 @@ export default function PrototypeView({ prototype: proto }: { prototype: Prototy
           <summary className="text-xs font-mono text-zinc-500 cursor-pointer hover:text-zinc-300">
             README.md
           </summary>
-          <pre className="mt-2 text-xs font-mono text-zinc-400 bg-zinc-900 rounded p-4 whitespace-pre-wrap leading-relaxed">
+          <pre className="mt-2 text-xs font-mono text-zinc-400 panel p-4 whitespace-pre-wrap leading-relaxed">
             {proto.readme}
           </pre>
         </details>

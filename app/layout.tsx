@@ -1,9 +1,12 @@
 import type { Metadata } from 'next'
-import { Syne, DM_Mono } from 'next/font/google'
+import { Rajdhani, IBM_Plex_Sans, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 
-const syne = Syne({ subsets: ['latin'], variable: '--font-syne' })
-const dmMono = DM_Mono({ subsets: ['latin'], weight: ['300', '400', '500'], variable: '--font-dm-mono' })
+// One statement face, used for headings only. Body and data stay in plain,
+// highly legible faces so the styling never costs readability.
+const rajdhani = Rajdhani({ subsets: ['latin'], weight: ['500', '600', '700'], variable: '--font-rajdhani' })
+const plex = IBM_Plex_Sans({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-plex' })
+const jetbrains = JetBrains_Mono({ subsets: ['latin'], variable: '--font-jetbrains' })
 
 export const metadata: Metadata = {
   title: 'Idea Engine',
@@ -12,7 +15,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${syne.variable} ${dmMono.variable} h-full`}>
+    <html lang="en" className={`${rajdhani.variable} ${plex.variable} ${jetbrains.variable} h-full`}>
       <body className="h-full antialiased">{children}</body>
     </html>
   )

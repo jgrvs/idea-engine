@@ -221,15 +221,19 @@ export default function Home() {
   }
 
   const healthDot = health === null
-    ? 'bg-zinc-600'
+    ? 'bg-zinc-600 text-zinc-600'
     : isHealthy
-    ? 'bg-green-500'
-    : 'bg-red-500'
+    ? 'bg-green-400 text-green-400 shadow-[0_0_8px_currentColor]'
+    : 'bg-red-500 text-red-500 shadow-[0_0_8px_currentColor]'
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <header className="shrink-0 h-14 border-b border-zinc-800 flex items-center justify-between px-6">
-        <h1 className="font-sans font-bold text-lg tracking-tight">Idea Engine</h1>
+      <header className="shrink-0 h-14 border-b border-zinc-800 bg-surface neon-rule z-10 flex items-center justify-between px-6">
+        <h1 className="font-display font-bold text-xl uppercase tracking-[0.18em] leading-none select-none">
+          <span className="text-zinc-100">Idea</span>
+          <span className="text-pink-400 mx-1.5">{'//'}</span>
+          <span className="text-cyan-400 text-glow">Engine</span>
+        </h1>
         <div className="flex items-center gap-3">
           {/* Health + log toggle */}
           <button
@@ -247,20 +251,20 @@ export default function Home() {
 
           <button
             onClick={() => setShowUsage(true)}
-            className="text-xs font-mono px-3 py-1.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+            className="text-xs font-mono px-3 py-1.5 neon text-zinc-400 hover:text-cyan-300"
           >
             Usage
           </button>
           <button
             onClick={() => setShowSettings(true)}
-            className="text-xs font-mono px-3 py-1.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+            className="text-xs font-mono px-3 py-1.5 neon text-zinc-400 hover:text-cyan-300"
           >
             Settings
           </button>
           <button
             onClick={handleGenerate}
             disabled={generating}
-            className="text-xs font-mono px-3 py-1.5 rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 disabled:opacity-40 transition-colors"
+            className="text-xs font-mono px-3 py-1.5 neon text-cyan-400"
           >
             {generating ? 'Generating…' : '+ Generate now'}
           </button>
@@ -283,25 +287,25 @@ export default function Home() {
             <div className="flex items-center gap-2 ml-2">
               <button
                 onClick={() => bulkApply('selected_analysis')}
-                className="text-xs font-mono px-3 py-1.5 rounded border border-blue-900 text-blue-400 hover:bg-blue-950 transition-colors"
+                className="text-xs font-mono px-3 py-1.5 neon text-blue-400"
               >
                 Send to Analysis
               </button>
               <button
                 onClick={() => bulkApply('selected_prototype')}
-                className="text-xs font-mono px-3 py-1.5 rounded border border-purple-900 text-purple-400 hover:bg-purple-950 transition-colors"
+                className="text-xs font-mono px-3 py-1.5 neon text-purple-400"
               >
                 Queue Prototype
               </button>
               <button
                 onClick={() => setBulkDismissOpen(true)}
-                className="text-xs font-mono px-3 py-1.5 rounded border border-red-900 text-red-400 hover:bg-red-950 transition-colors"
+                className="text-xs font-mono px-3 py-1.5 neon text-red-400"
               >
                 Dismiss…
               </button>
               <button
                 onClick={() => bulkApply('restore')}
-                className="text-xs font-mono px-3 py-1.5 rounded border border-zinc-700 text-zinc-400 hover:bg-zinc-900 transition-colors"
+                className="text-xs font-mono px-3 py-1.5 neon text-zinc-400 hover:text-cyan-300"
               >
                 Restore
               </button>
@@ -363,7 +367,7 @@ export default function Home() {
           onCheckAll={checkAll}
         />
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto bg-grid">
           {selectedIdea ? (
             <IdeaDetail
               idea={selectedIdea}
@@ -376,7 +380,7 @@ export default function Home() {
             />
           ) : (
             <div className="h-full flex items-center justify-center">
-              <div className="text-center space-y-2">
+              <div className="panel hud px-10 py-8 text-center space-y-2">
                 <p className="text-zinc-500 font-mono text-sm">
                   {loading ? 'Loading…' : ideas.length > 0 ? 'Select an idea' : 'No ideas yet'}
                 </p>

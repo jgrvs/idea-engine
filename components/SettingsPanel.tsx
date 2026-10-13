@@ -39,7 +39,7 @@ function Chips({ label, options, selected, onToggle, disabled }: {
               onClick={() => onToggle(o)}
               disabled={disabled}
               className={`text-xs font-mono px-2 py-1 rounded border transition-colors disabled:opacity-40 ${
-                on ? 'border-zinc-500 bg-zinc-700 text-zinc-100' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                on ? 'chip-on' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
               }`}
             >
               {o}
@@ -143,7 +143,7 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
               key={t}
               onClick={() => setTab(t)}
               className={`text-sm font-mono px-3 py-1.5 rounded capitalize transition-colors ${
-                tab === t ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+                tab === t ? 'chip-on' : 'text-zinc-500 hover:text-zinc-300'
               }`}
             >
               {t}
@@ -180,7 +180,7 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
                   key={n}
                   onClick={() => update({ ideaCount: n })}
                   className={`text-xs font-mono px-3 py-1.5 rounded border transition-colors ${
-                    config.ideaCount === n ? 'border-zinc-500 bg-zinc-700 text-zinc-100' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                    config.ideaCount === n ? 'chip-on' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
                   {n}
@@ -227,7 +227,7 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
               type="checkbox"
               checked={config.dedupEnabled}
               onChange={e => update({ dedupEnabled: e.target.checked })}
-              className="accent-zinc-400"
+              className="accent-cyan-400"
             />
             <span className="text-xs font-mono text-zinc-400">Semantic dedup — reject ideas too similar in meaning to past ones</span>
           </label>
@@ -244,7 +244,7 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
                 min={0.7} max={0.95} step={0.01}
                 value={config.dedupThreshold}
                 onChange={e => update({ dedupThreshold: parseFloat(e.target.value) })}
-                className="w-full accent-zinc-400"
+                className="w-full accent-cyan-400"
               />
             </div>
           )}
@@ -265,7 +265,7 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
             min={0} max={8} step={0.5}
             value={config.screenThreshold}
             onChange={e => update({ screenThreshold: parseFloat(e.target.value) })}
-            className="w-full accent-zinc-400"
+            className="w-full accent-cyan-400"
           />
         </div>
 
@@ -287,7 +287,7 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
             value={preview}
             onChange={e => onPromptEdit(e.target.value)}
             spellCheck={false}
-            className="w-full h-64 text-xs font-mono bg-[#0d0d0d] border border-zinc-800 rounded p-3 text-zinc-300 leading-relaxed focus:outline-none focus:border-zinc-600 resize-none"
+            className="w-full h-64 text-xs font-mono bg-zinc-950 border border-zinc-800 rounded p-3 text-zinc-300 leading-relaxed focus:outline-none focus:border-zinc-600 resize-none"
           />
           <p className="text-xs font-mono text-zinc-600 mt-1">
             Edit the text directly to take full control. Selectors will stop overwriting it until you reset.
@@ -298,7 +298,7 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
           <button
             onClick={save}
             disabled={saving}
-            className="text-sm font-mono px-4 py-2 rounded border border-green-900 text-green-400 hover:bg-green-950 disabled:opacity-40 transition-colors"
+            className="text-sm font-mono px-4 py-2 neon text-green-400"
           >
             {saving ? 'Saving…' : 'Save settings'}
           </button>
@@ -342,7 +342,7 @@ function Slider({ label, hint, value, min, max, step, onChange, fmt }: {
         type="range"
         min={min} max={max} step={step} value={value}
         onChange={e => onChange(parseFloat(e.target.value))}
-        className="w-full accent-zinc-400"
+        className="w-full accent-cyan-400"
       />
     </div>
   )
@@ -423,7 +423,7 @@ function ScoringTab({ onSaved }: { onSaved: () => void }) {
         <button
           onClick={save}
           disabled={saving}
-          className="text-sm font-mono px-4 py-2 rounded border border-green-900 text-green-400 hover:bg-green-950 disabled:opacity-40 transition-colors"
+          className="text-sm font-mono px-4 py-2 neon text-green-400"
         >
           {saving ? 'Saving…' : 'Save scoring'}
         </button>
@@ -435,9 +435,9 @@ function ScoringTab({ onSaved }: { onSaved: () => void }) {
 
 function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-12 px-4 bg-black/60" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-12 px-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-[#111] border border-zinc-800 rounded-lg p-6"
+        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto panel p-6 shadow-[0_0_60px_-20px_var(--color-cyan-400)]"
         onClick={e => e.stopPropagation()}
       >
         {children}

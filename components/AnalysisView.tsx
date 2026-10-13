@@ -3,7 +3,7 @@ import { RecommendationBadge, VerdictBadge } from './StatusBadge'
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
   const pct = Math.round((value / 10) * 100)
-  const color = value >= 7 ? 'bg-green-500' : value >= 5 ? 'bg-yellow-500' : 'bg-red-500'
+  const color = value >= 7 ? 'text-green-400' : value >= 5 ? 'text-yellow-400' : 'text-red-400'
   return (
     <div>
       <div className="flex justify-between text-xs font-mono text-zinc-400 mb-1">
@@ -11,7 +11,7 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
         <span>{value.toFixed(1)}</span>
       </div>
       <div className="h-1 bg-zinc-800 rounded-full">
-        <div className={`h-1 rounded-full ${color}`} style={{ width: `${pct}%` }} />
+        <div className={`h-1 rounded-full neon-bar ${color}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   )
@@ -22,7 +22,7 @@ export default function AnalysisView({ analysis }: { analysis: Analysis }) {
     <div className="space-y-6">
       {/* Reconciled verdict: the headline. Analyst + VC are the supporting detail. */}
       {analysis.verdict && (
-        <div className="bg-zinc-900 rounded p-4 space-y-2">
+        <div className="panel hud p-4 space-y-2">
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-zinc-500">Verdict</span>
             <VerdictBadge verdict={analysis.verdict} />
@@ -71,7 +71,7 @@ export default function AnalysisView({ analysis }: { analysis: Analysis }) {
           { label: 'SOM', value: analysis.som },
         ].map(({ label, value }) =>
           value ? (
-            <div key={label} className="bg-zinc-900 rounded p-3">
+            <div key={label} className="panel p-3">
               <p className="text-xs font-mono text-zinc-500 mb-1">{label}</p>
               <p className="text-sm font-sans">{value}</p>
             </div>
@@ -104,8 +104,8 @@ export default function AnalysisView({ analysis }: { analysis: Analysis }) {
           <p className="text-xs font-mono text-zinc-500 mb-2">Competitors</p>
           <div className="space-y-2">
             {analysis.competitors.map((c, i) => (
-              <div key={i} className="bg-zinc-900 rounded p-3">
-                <p className="text-sm font-sans font-semibold">{c.name}</p>
+              <div key={i} className="panel p-3">
+                <p className="text-sm font-display font-semibold tracking-wide">{c.name}</p>
                 <p className="text-xs text-zinc-400 mt-0.5">{c.description}</p>
                 <p className="text-xs text-green-400 mt-1">↳ {c.weakness}</p>
               </div>

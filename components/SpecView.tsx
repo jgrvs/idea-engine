@@ -14,7 +14,7 @@ function Field({ label, value, editing, onChange, rows = 2 }: {
       {editing ? (
         <textarea value={value} onChange={e => onChange(e.target.value)} rows={rows} spellCheck={false} className={INPUT} />
       ) : (
-        <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line">{value || <span className="text-zinc-700">—</span>}</p>
+        <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line">{value || <span className="text-zinc-600/50">—</span>}</p>
       )}
     </div>
   )
@@ -26,7 +26,7 @@ function ListField({ label, items, editing, onChange, hint }: {
   return (
     <div>
       <p className="text-xs font-mono text-zinc-500 mb-1">
-        {label}{hint && <span className="text-zinc-700"> · {hint}</span>}
+        {label}{hint && <span className="text-zinc-600/50"> · {hint}</span>}
       </p>
       {editing ? (
         <textarea
@@ -43,7 +43,7 @@ function ListField({ label, items, editing, onChange, hint }: {
           ))}
         </ul>
       ) : (
-        <p className="text-sm text-zinc-700">—</p>
+        <p className="text-sm text-zinc-600/50">—</p>
       )}
     </div>
   )
@@ -101,7 +101,7 @@ export default function SpecView({
         )}
       </div>
 
-      <div className="bg-zinc-900 rounded p-4">
+      <div className="panel hud p-4">
         <Field label="Wedge feature" value={draft.wedge_feature} editing={editing} onChange={v => set({ wedge_feature: v })} />
       </div>
 

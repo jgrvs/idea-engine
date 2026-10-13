@@ -21,12 +21,12 @@ const ACTOR_STYLE: Record<string, string> = {
   model: 'text-amber-400',
 }
 
-const BTN = 'text-sm font-mono px-4 py-2 rounded border transition-colors'
-const BTN_BLUE = `${BTN} border-blue-900 text-blue-400 hover:bg-blue-950`
-const BTN_CYAN = `${BTN} border-cyan-900 text-cyan-300 hover:bg-cyan-950`
-const BTN_TEAL = `${BTN} border-teal-900 text-teal-300 hover:bg-teal-950`
-const BTN_PURPLE = `${BTN} border-purple-900 text-purple-400 hover:bg-purple-950`
-const BTN_GREY = `${BTN} border-zinc-700 text-zinc-400 hover:bg-zinc-900`
+const BTN = 'text-sm font-mono px-4 py-2 neon'
+const BTN_BLUE = `${BTN} text-blue-400`
+const BTN_CYAN = `${BTN} text-cyan-400`
+const BTN_TEAL = `${BTN} text-teal-300`
+const BTN_PURPLE = `${BTN} text-purple-400`
+const BTN_GREY = `${BTN} text-zinc-400 hover:text-cyan-300`
 
 function VcList({ label, items, marker }: { label: string; items: string[] | null; marker: string }) {
   if (!items || items.length === 0) return null
@@ -48,7 +48,7 @@ function VcReviewView({ review }: { review: VcReview }) {
   return (
     <div className="border-t border-zinc-800 pt-6">
       <div className="flex items-center gap-3 mb-4">
-        <h3 className="text-sm font-sans font-bold text-zinc-200">VC Review</h3>
+        <h3 className="text-sm font-display font-bold tracking-wide text-zinc-200">VC Review</h3>
         {review.would_fund && (
           <span className={`text-xs font-mono px-2 py-0.5 rounded border ${FUND_STYLE[review.would_fund] ?? 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>
             would {review.would_fund}
@@ -82,8 +82,8 @@ function DecisionLog({ decisions }: { decisions: Decision[] }) {
       <ul className="space-y-1">
         {decisions.map(d => (
           <li key={d.id} className="text-xs font-mono text-zinc-500 flex gap-2 items-baseline">
-            <span className="text-zinc-700 shrink-0">{new Date(d.created_at).toLocaleString()}</span>
-            <span className="text-zinc-400">{d.from_status} → {d.to_status}</span>
+            <span className="text-zinc-600 shrink-0">{new Date(d.created_at).toLocaleString()}</span>
+            <span className="text-zinc-400 whitespace-nowrap">{d.from_status} <span className="text-cyan-400">→</span> {d.to_status}</span>
             <span className={ACTOR_STYLE[d.actor] ?? 'text-zinc-500'}>{d.actor}</span>
             {d.reason && <span className="text-zinc-500 truncate">· {d.reason}{d.note ? `: ${d.note}` : ''}</span>}
           </li>
@@ -101,7 +101,7 @@ function ErrorBanner({ title, message, onRetry }: { title: string; message: stri
           <p className="text-xs font-mono text-red-400 mb-1">{title}</p>
           <p className="text-xs font-mono text-red-300/80 break-words">{message}</p>
         </div>
-        <button onClick={onRetry} className="shrink-0 text-xs font-mono px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950 transition-colors">
+        <button onClick={onRetry} className="shrink-0 text-xs font-mono px-3 py-1.5 neon text-red-300">
           ↻ Retry
         </button>
       </div>
@@ -120,16 +120,16 @@ interface Props {
   onStatusUpdate: (status: IdeaStatus | 'restore', reason?: KillReason, note?: string) => Promise<boolean>
 }
 
-const PILL = 'text-xs font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-400'
+const PILL = 'text-xs font-mono px-2 py-0.5 rounded-sm border border-zinc-800 bg-zinc-900 text-zinc-400'
 
 function ScoreRow({ label, value }: { label: string; value: number }) {
   const pct = Math.round((value / 10) * 100)
-  const color = value >= 7 ? 'bg-green-500' : value >= 4.5 ? 'bg-yellow-500' : 'bg-red-500'
+  const color = value >= 7 ? 'text-green-400' : value >= 4.5 ? 'text-yellow-400' : 'text-red-400'
   return (
     <div className="flex items-center gap-3">
       <span className="text-xs font-mono text-zinc-500 w-28 shrink-0">{label}</span>
       <div className="flex-1 h-1 bg-zinc-800 rounded-full">
-        <div className={`h-1 rounded-full ${color}`} style={{ width: `${pct}%` }} />
+        <div className={`h-1 rounded-full neon-bar ${color}`} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs font-mono text-zinc-400 w-7 text-right">{value.toFixed(1)}</span>
     </div>
@@ -138,11 +138,11 @@ function ScoreRow({ label, value }: { label: string; value: number }) {
 
 function ScoreBreakdown({ idea }: { idea: Idea }) {
   return (
-    <div className="bg-zinc-900 rounded p-4">
+    <div className="panel hud p-4">
       <div className="flex items-baseline justify-between mb-3">
         <p className="text-xs font-mono text-zinc-500">Viability breakdown</p>
         {idea.viability_score != null && (
-          <span className="text-sm font-mono text-zinc-200">{idea.viability_score.toFixed(1)} / 10</span>
+          <span className="text-sm font-mono text-zinc-500"><span className="text-lg text-cyan-300 text-glow">{idea.viability_score.toFixed(1)}</span> / 10</span>
         )}
       </div>
       <div className="space-y-2">
@@ -195,7 +195,7 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
       {/* Header */}
       <div className="mb-6">
         <div className="flex items-start justify-between gap-4 mb-1">
-          <h2 className="text-2xl font-sans font-bold leading-tight">{idea.title}</h2>
+          <h2 className="text-3xl font-display font-bold tracking-wide leading-tight">{idea.title}</h2>
           <StatusBadge status={idea.status} />
         </div>
         <p className="text-zinc-400 font-mono text-sm">{idea.tagline}</p>
@@ -243,9 +243,9 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
               disabled={disabled}
               className={`px-3 py-2 text-sm font-mono capitalize transition-colors border-b-2 -mb-px ${
                 tab === t
-                  ? 'border-zinc-300 text-zinc-100'
+                  ? 'tab-on'
                   : disabled
-                  ? 'border-transparent text-zinc-700 cursor-default'
+                  ? 'border-transparent text-zinc-600/50 cursor-default'
                   : 'border-transparent text-zinc-500 hover:text-zinc-300'
               }`}
             >
@@ -373,7 +373,7 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
             {!dismissOpen ? (
               <button
                 onClick={() => setDismissOpen(true)}
-                className="text-sm font-mono px-4 py-2 rounded border border-zinc-800 text-zinc-600 hover:text-zinc-400 transition-colors ml-auto"
+                className="text-sm font-mono px-4 py-2 neon text-zinc-600 hover:text-red-400 ml-auto"
               >
                 Dismiss
               </button>
@@ -426,7 +426,7 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
           )}
           <button
             onClick={() => onStatusUpdate('restore')}
-            className="text-sm font-mono px-4 py-2 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-900 transition-colors ml-auto"
+            className="text-sm font-mono px-4 py-2 neon text-zinc-300 hover:text-cyan-300 ml-auto"
           >
             ↩ Restore
           </button>

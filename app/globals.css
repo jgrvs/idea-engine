@@ -1,17 +1,287 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Neon design system
+
+   Principles (deliberately restrained):
+   - Layered blue-black surfaces carry depth; there are no drop shadows.
+   - One primary neon (cyan) for structure and interaction. Other hues only
+     carry meaning: stage, success, warning, failure.
+   - Lines are hairlines. Glow is a soft halo on lines and state, never on body
+     text, and nothing pulses, flickers, or animates beyond a short hover fade.
+   - All text meets WCAG AA (4.5:1) against the surface it sits on.
+
+   The app is styled with Tailwind's stock colour names, so the palette is
+   re-pointed here rather than at every call site.
+   ───────────────────────────────────────────────────────────────────────────── */
+
 @theme {
-  --font-sans: var(--font-syne);
-  --font-mono: var(--font-dm-mono);
-  --color-background: #0a0a0a;
-  --color-surface: #111111;
-  --color-border: #27272a;
+  --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-rajdhani), var(--font-plex), ui-sans-serif, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "Cascadia Code", monospace;
+
+  /* Surfaces, darkest to lightest */
+  --color-background: #05070d;
+  --color-surface: #080c15;
+  --color-border: #18213a;
+
+  /* Neutrals: a cool blue-slate ramp. 950-700 are surfaces and hairlines,
+     600-100 are text (600 is the dimmest that still clears 4.5:1). */
+  --color-zinc-950: #05070d;
+  --color-zinc-900: #0c111d;
+  --color-zinc-800: #18213a;
+  --color-zinc-700: #26345a;
+  --color-zinc-600: #6a7da0;
+  --color-zinc-500: #8093b5;
+  --color-zinc-400: #9fb0cf;
+  --color-zinc-300: #c5d0e6;
+  --color-zinc-200: #dfe7f5;
+  --color-zinc-100: #f1f5fc;
+
+  /* Primary neon */
+  --color-cyan-300: #7df4ff;
+  --color-cyan-400: #22e3ff;
+  --color-cyan-500: #00c8f0;
+  --color-cyan-800: #0b5f73;
+  --color-cyan-900: #0a4656;
+  --color-cyan-950: #06222b;
+
+  /* Stage hues */
+  --color-blue-200: #b3d4ff;
+  --color-blue-400: #4da3ff;
+  --color-blue-500: #2b86ff;
+  --color-blue-900: #123a75;
+  --color-blue-950: #0a1c3d;
+
+  --color-teal-300: #6dffd9;
+  --color-teal-400: #2dffc4;
+  --color-teal-900: #0c5546;
+  --color-teal-950: #06261f;
+
+  --color-purple-300: #d2a8ff;
+  --color-purple-400: #b884ff;
+  --color-purple-500: #a05cff;
+  --color-purple-900: #44207a;
+  --color-purple-950: #1f0f3a;
+
+  /* Semantic hues */
+  --color-green-300: #7dffb5;
+  --color-green-400: #3dff9a;
+  --color-green-500: #14f07f;
+  --color-green-800: #0f7a45;
+  --color-green-900: #0b5531;
+  --color-green-950: #062716;
+
+  --color-amber-400: #ffc247;
+  --color-amber-500: #ffab1a;
+  --color-amber-950: #2e1f05;
+
+  --color-yellow-300: #fff27d;
+  --color-yellow-400: #ffe53d;
+  --color-yellow-500: #ffd91a;
+  --color-yellow-800: #7a6a0f;
+  --color-yellow-900: #55490b;
+  --color-yellow-950: #272205;
+
+  --color-red-300: #ff9db0;
+  --color-red-400: #ff5d7a;
+  --color-red-500: #ff3158;
+  --color-red-800: #8f1f38;
+  --color-red-900: #6b1729;
+  --color-red-950: #300b14;
+
+  /* Secondary neon: magenta. Used for the brand mark and the far end of the
+     header rule, nowhere else. */
+  --color-pink-400: #ff5cf0;
+  --color-orange-400: #ff9347;
 }
+
+/* ── Base (unlayered, so these win over utilities where they overlap) ───────── */
 
 * { box-sizing: border-box; }
 
+html { color-scheme: dark; }
+
 body {
   background: var(--color-background);
-  color: #f4f4f5;
-  font-family: var(--font-syne), sans-serif;
+  color: var(--color-zinc-100);
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-cyan-400) 30%, transparent);
+  color: var(--color-zinc-100);
+}
+
+/* Thin scrollbars that light up only when touched */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-zinc-700) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--color-zinc-700); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--color-cyan-400) 55%, var(--color-zinc-700)); }
+
+/* Keyboard focus: a crisp cyan hairline, visible on every surface */
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 1px solid var(--color-cyan-400);
+  outline-offset: 2px;
+}
+
+/* Fields: the border itself becomes the neon line when focused */
+input:not([type="range"]):not([type="checkbox"]),
+textarea,
+select {
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+input:not([type="range"]):not([type="checkbox"]):focus,
+textarea:focus,
+select:focus {
+  border-color: color-mix(in oklab, var(--color-cyan-400) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-cyan-400) 18%, transparent),
+              0 0 14px -6px var(--color-cyan-400);
+}
+select option { background: var(--color-zinc-900); color: var(--color-zinc-200); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+/* ── Neon utilities ─────────────────────────────────────────────────────────── */
+
+/* Outlined control tinted by its own text colour. The line brightens and
+   picks up a soft halo on hover; that fade is the only motion in the UI. */
+@utility neon {
+  border: 1px solid color-mix(in oklab, currentColor 36%, transparent);
+  background-color: color-mix(in oklab, currentColor 5%, transparent);
+  border-radius: 3px;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, color 160ms ease;
+  &:hover:not(:disabled) {
+    border-color: color-mix(in oklab, currentColor 85%, transparent);
+    background-color: color-mix(in oklab, currentColor 11%, transparent);
+    box-shadow: 0 0 16px -5px currentColor, inset 0 0 12px -8px currentColor;
+  }
+  &:disabled { opacity: 0.4; cursor: default; }
+}
+
+/* Status pill: hairline outline in the status hue, uppercase like a HUD tag */
+@utility badge {
+  display: inline-block;
+  border: 1px solid color-mix(in oklab, currentColor 34%, transparent);
+  background-color: color-mix(in oklab, currentColor 8%, transparent);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Card surface: one step up from the page with a cyan-tinted hairline */
+@utility panel {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--color-cyan-400) 3%, var(--color-zinc-900)),
+    var(--color-zinc-900)
+  );
+  border: 1px solid color-mix(in oklab, var(--color-cyan-400) 12%, var(--color-zinc-800));
+  border-radius: 4px;
+}
+
+/* HUD corner brackets: two lit corners on an otherwise quiet panel */
+@utility hud {
+  position: relative;
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    pointer-events: none;
+    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-cyan-400) 70%, transparent));
+  }
+  &::before {
+    top: -1px;
+    left: -1px;
+    border-top: 1px solid var(--color-cyan-400);
+    border-left: 1px solid var(--color-cyan-400);
+  }
+  &::after {
+    right: -1px;
+    bottom: -1px;
+    border-right: 1px solid var(--color-cyan-400);
+    border-bottom: 1px solid var(--color-cyan-400);
+  }
+}
+
+/* The signature line: cyan at the brand end, fading through to magenta */
+@utility neon-rule {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(
+      90deg,
+      var(--color-cyan-400) 0%,
+      color-mix(in oklab, var(--color-cyan-400) 35%, transparent) 30%,
+      color-mix(in oklab, var(--color-pink-400) 30%, transparent) 70%,
+      var(--color-pink-400) 100%
+    );
+    box-shadow: 0 0 10px 0 color-mix(in oklab, var(--color-cyan-400) 45%, transparent);
+  }
+}
+
+/* Selected list row: a lit rail on the left edge, wash fading to the right */
+@utility row-on {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-cyan-400) 11%, transparent),
+    color-mix(in oklab, var(--color-cyan-400) 2%, transparent) 75%
+  );
+  box-shadow: inset 2px 0 0 var(--color-cyan-400), inset 10px 0 14px -10px var(--color-cyan-400);
+}
+
+/* Active tab: the underline is the neon line */
+@utility tab-on {
+  color: var(--color-cyan-300);
+  border-bottom-color: var(--color-cyan-400);
+  box-shadow: 0 7px 10px -8px var(--color-cyan-400);
+}
+
+/* Selected chip / segmented option. Line and wash only, no halo: many chips
+   can be on at once (settings), and a dozen halos side by side reads as noise. */
+@utility chip-on {
+  color: var(--color-cyan-300);
+  border-color: transparent;
+  background-color: color-mix(in oklab, var(--color-cyan-400) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-cyan-400) 50%, transparent);
+}
+
+/* Meter fill: takes its hue from the text colour and glows faintly */
+@utility neon-bar {
+  background-color: currentColor;
+  box-shadow: 0 0 8px -1px currentColor;
+}
+
+/* Soft halo for short display text only (brand, hero numbers) */
+@utility text-glow {
+  text-shadow: 0 0 14px color-mix(in oklab, currentColor 55%, transparent);
+}
+
+/* Static blueprint grid that fades out toward the bottom of the pane */
+@utility bg-grid {
+  background-image:
+    radial-gradient(ellipse 100% 75% at 50% 0%, transparent 0%, var(--color-background) 88%),
+    linear-gradient(to right, color-mix(in oklab, var(--color-cyan-400) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-cyan-400) 5%, transparent) 1px, transparent 1px);
+  background-size: 100% 100%, 40px 40px, 40px 40px;
 }

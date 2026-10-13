@@ -24,6 +24,8 @@ const fmtTokens = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}
 const STAGE_COLOR: Record<string, string> = {
   generate: 'bg-blue-500',
   analyze: 'bg-amber-500',
+  spec: 'bg-cyan-500',
+  mock: 'bg-teal-400',
   prototype: 'bg-purple-500',
 }
 
@@ -35,10 +37,10 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
   }, [])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-12 px-4 bg-black/60" onClick={onClose}>
-      <div className="w-full max-w-lg bg-[#111] border border-zinc-800 rounded-lg p-6" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-12 px-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-lg panel hud p-6 shadow-[0_0_60px_-20px_var(--color-cyan-400)]" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
-          <h2 className="font-sans font-bold text-lg">Spend this month</h2>
+          <h2 className="font-display font-bold tracking-wide text-lg">Spend this month</h2>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 font-mono text-sm">close</button>
         </div>
         <p className="text-xs font-mono text-zinc-600 mb-5">
@@ -52,7 +54,7 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
         ) : (
           <>
             <div className="mb-6">
-              <p className="text-3xl font-sans font-bold">{fmtUSD(usage.totalCost)}</p>
+              <p className="text-4xl font-display font-bold tracking-wide text-cyan-300 text-glow">{fmtUSD(usage.totalCost)}</p>
               <p className="text-xs font-mono text-zinc-500 mt-1">
                 {fmtTokens(usage.totalInputTokens)} in · {fmtTokens(usage.totalOutputTokens)} out
               </p>

@@ -21,7 +21,7 @@ export default function MockView({ ideaId, versions }: { ideaId: string; version
             key={v.version}
             onClick={() => setVersion(v.version)}
             className={`text-xs font-mono px-2 py-0.5 rounded border transition-colors ${
-              v.version === version ? 'border-zinc-500 bg-zinc-700 text-zinc-100' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
+              v.version === version ? 'chip-on' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
             }`}
           >
             v{v.version}

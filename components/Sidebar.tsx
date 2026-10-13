@@ -72,7 +72,7 @@ export default function Sidebar({
   const allChecked = visible.length > 0 && visible.every(i => checkedIds.has(i.id))
 
   return (
-    <aside className="w-72 shrink-0 border-r border-zinc-800 flex flex-col overflow-hidden bg-[#111]">
+    <aside className="w-72 shrink-0 border-r border-zinc-800 flex flex-col overflow-hidden bg-surface">
       {/* Filter tabs */}
       <div className="flex gap-0.5 p-2 border-b border-zinc-800 flex-wrap">
         {FILTERS.map(f => (
@@ -80,7 +80,7 @@ export default function Sidebar({
             key={f.value}
             onClick={() => setFilter(f.value)}
             className={`text-xs font-mono px-2 py-1 rounded transition-colors ${
-              filter === f.value ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+              filter === f.value ? 'chip-on' : 'text-zinc-500 hover:text-zinc-300'
             }`}
           >
             {f.label}
@@ -98,7 +98,7 @@ export default function Sidebar({
               key={f}
               onClick={() => setSortField(f)}
               className={`text-xs font-mono px-1.5 py-0.5 rounded transition-colors ${
-                sortField === f ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
+                sortField === f ? 'chip-on' : 'text-zinc-500 hover:text-zinc-300'
               }`}
             >
               {label}
@@ -137,12 +137,12 @@ export default function Sidebar({
               <div
                 key={idea.id}
                 className={`flex items-start border-b border-zinc-900 transition-colors ${
-                  idea.id === selectedId ? 'bg-zinc-800' : 'hover:bg-zinc-900'
+                  idea.id === selectedId ? 'row-on' : 'hover:bg-zinc-900'
                 }`}
               >
                 <button
                   onClick={() => onToggleCheck(idea.id)}
-                  className="pl-3 pt-3.5 shrink-0 text-sm font-mono text-zinc-400 hover:text-zinc-200"
+                  className={`pl-3 pt-3.5 shrink-0 text-sm font-mono transition-colors ${checked ? 'text-cyan-400' : 'text-zinc-600 hover:text-zinc-300'}`}
                   aria-label="Select idea"
                 >
                   {checked ? '☑' : '☐'}
@@ -152,7 +152,7 @@ export default function Sidebar({
                   className="flex-1 text-left px-4 py-3 min-w-0"
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="text-sm font-sans font-semibold leading-snug line-clamp-1">{idea.title}</span>
+                    <span className="text-base font-display font-semibold tracking-wide leading-snug line-clamp-1">{idea.title}</span>
                     {idea.viability_score != null && (
                       <span className="shrink-0 text-xs font-mono text-zinc-500 mt-0.5">
                         {idea.viability_score.toFixed(1)}
