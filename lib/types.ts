@@ -10,6 +10,46 @@ export type IdeaStatus =
 
 export type Recommendation = 'go' | 'explore' | 'no-go'
 
+// Who moved an idea between stages: a person in the UI, the pipeline itself,
+// or a model verdict (reserved for future auto-screening).
+export type Actor = 'human' | 'auto' | 'model'
+
+// Every kill records one of these so dismissals carry signal, not just a flag.
+export const KILL_REASONS = ['duplicate', 'not-for-me', 'too-hard', 'no-demand', 'bad-timing', 'other'] as const
+export type KillReason = typeof KILL_REASONS[number]
+export const KILL_REASON_LABELS: Record<KillReason, string> = {
+  'duplicate':  'Duplicate of something seen',
+  'not-for-me': 'Not a fit for me',
+  'too-hard':   'Too hard to build or ship',
+  'no-demand':  'No real demand',
+  'bad-timing': 'Bad timing',
+  'other':      'Other (explain)',
+}
+
+export interface Decision {
+  id: string
+  idea_id: string
+  from_status: IdeaStatus
+  to_status: IdeaStatus
+  actor: Actor
+  reason: string | null
+  note: string | null
+  created_at: string
+}
+
+// Reviewable output of a stage (spec, mock, build log, experiment evidence).
+// Content lives inline for small text, or on disk under `path`.
+export interface Artifact {
+  id: string
+  idea_id: string
+  stage: string
+  version: number
+  kind: string
+  content: string | null
+  path: string | null
+  created_at: string
+}
+
 export type MarketSector =
   | 'defense/gov'
   | 'logistics'
@@ -99,9 +139,11 @@ export interface Idea {
   dismiss_reason: string | null
   analysis_stage: string | null
   analysis_error: string | null
+  prototype_error: string | null
   analysis?: Analysis
   vc_review?: VcReview
   prototype?: Prototype
+  decisions?: Decision[]
 }
 
 export type FundVerdict = 'fund' | 'explore' | 'pass'

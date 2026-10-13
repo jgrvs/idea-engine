@@ -1,11 +1,14 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import type { Idea, IdeaStatus } from '@/lib/types'
+import type { Idea, IdeaStatus, KillReason } from '@/lib/types'
 import Sidebar from '@/components/Sidebar'
 import IdeaDetail from '@/components/IdeaDetail'
 import SettingsPanel from '@/components/SettingsPanel'
 import UsagePanel from '@/components/UsagePanel'
+import KillReasonPicker from '@/components/KillReasonPicker'
+
+type RequestedStatus = IdeaStatus | 'restore'
 
 interface HealthStatus {
   api_key_present: boolean
@@ -39,6 +42,7 @@ export default function Home() {
 
   // bulk select — checkboxes always visible; bar shows when anything is checked
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
+  const [bulkDismissOpen, setBulkDismissOpen] = useState(false)
 
   const addLog = useCallback((level: LogEntry['level'], msg: string) => {
     log(logEntries, setLog, level, msg)
@@ -116,30 +120,35 @@ export default function Home() {
   }
 
   const handlePrototype = async (id: string) => {
-    setIdeas(prev => prev.map(i => i.id === id ? { ...i, status: 'prototyping' as IdeaStatus } : i))
+    // Background job like analyze: the route returns once the `prototyping`
+    // transition is recorded; polling picks up the built/failed state.
+    setIdeas(prev => prev.map(i => i.id === id ? { ...i, status: 'prototyping' as IdeaStatus, prototype_error: null } : i))
     addLog('info', `Building prototype for ${id.slice(0, 8)}…`)
     try {
       const res = await fetch(`/api/ideas/${id}/prototype`, { method: 'POST' })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-      addLog('ok', `Prototype written to disk for ${id.slice(0, 8)}`)
-      setIdeas(prev => prev.map(i => i.id === id ? body : i))
+      if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`)
+      setTimeout(fetchIdeas, 1500)
     } catch (e) {
-      addLog('error', `Prototype failed: ${e instanceof Error ? e.message : e}`)
+      addLog('error', `Could not start prototype: ${e instanceof Error ? e.message : e}`)
       await fetchIdeas()
     }
   }
 
-  const handleStatusUpdate = async (id: string, status: IdeaStatus | 'restore', reason?: string) => {
+  // Returns true on success so callers can chain (e.g. queue then build).
+  const handleStatusUpdate = async (id: string, status: RequestedStatus, reason?: KillReason, note?: string): Promise<boolean> => {
     const res = await fetch(`/api/ideas/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status, dismiss_reason: reason }),
+      body: JSON.stringify({ status, reason, note }),
     })
     if (res.ok) {
       const updated = await res.json()
       setIdeas(prev => prev.map(i => i.id === id ? updated : i))
+      return true
     }
+    const body = await res.json().catch(() => ({}))
+    addLog('error', body.error ?? `Status update failed (HTTP ${res.status})`)
+    return false
   }
 
   // ── Bulk select ───────────────────────────────────────────────────────────
@@ -163,17 +172,22 @@ export default function Home() {
 
   const clearChecks = () => setCheckedIds(new Set())
 
-  const bulkApply = async (status: 'selected_analysis' | 'selected_prototype' | 'dismissed' | 'restore') => {
+  const bulkApply = async (status: RequestedStatus, reason?: KillReason, note?: string) => {
     const ids = [...checkedIds]
     if (!ids.length) return
     addLog('info', `Applying ${status} to ${ids.length} ideas…`)
     const res = await fetch('/api/ideas/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids, status }),
+      body: JSON.stringify({ ids, status, reason, note }),
     })
     if (res.ok) {
-      addLog('ok', `Updated ${ids.length} ideas`)
+      const body = await res.json() as { updated: number; skipped: { id: string; error: string }[] }
+      if (body.skipped.length) {
+        addLog('error', `Updated ${body.updated}, skipped ${body.skipped.length} (e.g. ${body.skipped[0].error})`)
+      } else {
+        addLog('ok', `Updated ${body.updated} ideas`)
+      }
       await fetchIdeas()
       clearChecks()
     } else {
@@ -232,38 +246,44 @@ export default function Home() {
       {checkedIds.size > 0 && (
         <div className="shrink-0 border-b border-zinc-800 bg-zinc-950 px-6 py-2.5 flex items-center gap-3">
           <span className="text-xs font-mono text-zinc-400">{checkedIds.size} selected</span>
-          <div className="flex items-center gap-2 ml-2">
-            <button
-              onClick={() => bulkApply('selected_analysis')}
-              disabled={!checkedIds.size}
-              className="text-xs font-mono px-3 py-1.5 rounded border border-blue-900 text-blue-400 hover:bg-blue-950 disabled:opacity-30 transition-colors"
-            >
-              Send to Analysis
-            </button>
-            <button
-              onClick={() => bulkApply('selected_prototype')}
-              disabled={!checkedIds.size}
-              className="text-xs font-mono px-3 py-1.5 rounded border border-purple-900 text-purple-400 hover:bg-purple-950 disabled:opacity-30 transition-colors"
-            >
-              Queue Prototype
-            </button>
-            <button
-              onClick={() => bulkApply('dismissed')}
-              disabled={!checkedIds.size}
-              className="text-xs font-mono px-3 py-1.5 rounded border border-red-900 text-red-400 hover:bg-red-950 disabled:opacity-30 transition-colors"
-            >
-              Dismiss
-            </button>
-            <button
-              onClick={() => bulkApply('restore')}
-              disabled={!checkedIds.size}
-              className="text-xs font-mono px-3 py-1.5 rounded border border-zinc-700 text-zinc-400 hover:bg-zinc-900 disabled:opacity-30 transition-colors"
-            >
-              Restore
-            </button>
-          </div>
+          {bulkDismissOpen ? (
+            <div className="ml-2">
+              <KillReasonPicker
+                label={`Dismiss ${checkedIds.size}`}
+                onConfirm={(reason, note) => { setBulkDismissOpen(false); bulkApply('dismissed', reason, note) }}
+                onCancel={() => setBulkDismissOpen(false)}
+              />
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 ml-2">
+              <button
+                onClick={() => bulkApply('selected_analysis')}
+                className="text-xs font-mono px-3 py-1.5 rounded border border-blue-900 text-blue-400 hover:bg-blue-950 transition-colors"
+              >
+                Send to Analysis
+              </button>
+              <button
+                onClick={() => bulkApply('selected_prototype')}
+                className="text-xs font-mono px-3 py-1.5 rounded border border-purple-900 text-purple-400 hover:bg-purple-950 transition-colors"
+              >
+                Queue Prototype
+              </button>
+              <button
+                onClick={() => setBulkDismissOpen(true)}
+                className="text-xs font-mono px-3 py-1.5 rounded border border-red-900 text-red-400 hover:bg-red-950 transition-colors"
+              >
+                Dismiss…
+              </button>
+              <button
+                onClick={() => bulkApply('restore')}
+                className="text-xs font-mono px-3 py-1.5 rounded border border-zinc-700 text-zinc-400 hover:bg-zinc-900 transition-colors"
+              >
+                Restore
+              </button>
+            </div>
+          )}
           <button
-            onClick={clearChecks}
+            onClick={() => { clearChecks(); setBulkDismissOpen(false) }}
             className="text-xs font-mono text-zinc-500 hover:text-zinc-300 ml-auto"
           >
             Clear
@@ -324,7 +344,7 @@ export default function Home() {
               idea={selectedIdea}
               onAnalyze={() => handleAnalyze(selectedIdea.id)}
               onPrototype={() => handlePrototype(selectedIdea.id)}
-              onStatusUpdate={(status, reason) => handleStatusUpdate(selectedIdea.id, status, reason)}
+              onStatusUpdate={(status, reason, note) => handleStatusUpdate(selectedIdea.id, status, reason, note)}
             />
           ) : (
             <div className="h-full flex items-center justify-center">

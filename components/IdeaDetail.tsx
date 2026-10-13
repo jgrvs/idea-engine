@@ -1,10 +1,37 @@
 'use client'
 
 import { useState } from 'react'
-import type { Idea, IdeaStatus, VcReview } from '@/lib/types'
+import type { Decision, Idea, IdeaStatus, KillReason, VcReview } from '@/lib/types'
 import { StatusBadge } from './StatusBadge'
 import AnalysisView from './AnalysisView'
 import PrototypeView from './PrototypeView'
+import KillReasonPicker from './KillReasonPicker'
+
+const ACTOR_STYLE: Record<string, string> = {
+  human: 'text-blue-400',
+  auto: 'text-zinc-500',
+  model: 'text-amber-400',
+}
+
+// Compact audit trail from the decisions table: who moved the idea, where, why.
+function DecisionLog({ decisions }: { decisions: Decision[] }) {
+  if (!decisions.length) return null
+  return (
+    <div>
+      <p className="text-xs font-mono text-zinc-500 mb-2">History</p>
+      <ul className="space-y-1">
+        {decisions.map(d => (
+          <li key={d.id} className="text-xs font-mono text-zinc-500 flex gap-2 items-baseline">
+            <span className="text-zinc-700 shrink-0">{new Date(d.created_at).toLocaleString()}</span>
+            <span className="text-zinc-400">{d.from_status} → {d.to_status}</span>
+            <span className={ACTOR_STYLE[d.actor] ?? 'text-zinc-500'}>{d.actor}</span>
+            {d.reason && <span className="text-zinc-500 truncate">· {d.reason}{d.note ? `: ${d.note}` : ''}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 const FUND_STYLE: Record<string, string> = {
   fund: 'bg-green-950 text-green-400 border-green-900',
@@ -61,7 +88,8 @@ interface Props {
   idea: Idea
   onAnalyze: () => void
   onPrototype: () => void
-  onStatusUpdate: (status: IdeaStatus, reason?: string) => void
+  // Resolves true when the server accepted the move; false on a gate rejection.
+  onStatusUpdate: (status: IdeaStatus | 'restore', reason?: KillReason, note?: string) => Promise<boolean>
 }
 
 const PILL = 'text-xs font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-400'
@@ -105,9 +133,14 @@ function ScoreBreakdown({ idea }: { idea: Idea }) {
 export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdate }: Props) {
   const [tab, setTab] = useState<'brief' | 'analysis' | 'prototype'>('brief')
   const [dismissOpen, setDismissOpen] = useState(false)
-  const [dismissReason, setDismissReason] = useState('')
 
   const isProcessing = idea.status === 'analyzing' || idea.status === 'prototyping'
+
+  // From `analyzed`, building means: pass the select gate, then start the job.
+  const queueAndBuild = async () => {
+    const ok = await onStatusUpdate('selected_prototype')
+    if (ok) onPrototype()
+  }
 
   return (
     <div className="max-w-3xl mx-auto px-8 py-8">
@@ -146,6 +179,24 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
             </div>
             <button
               onClick={onAnalyze}
+              className="shrink-0 text-xs font-mono px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950 transition-colors"
+            >
+              ↻ Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Prototype error banner */}
+      {idea.prototype_error && idea.status !== 'prototyping' && (
+        <div className="mb-6 rounded border border-red-900 bg-red-950/40 px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-mono text-red-400 mb-1">Prototype failed</p>
+              <p className="text-xs font-mono text-red-300/80 break-words">{idea.prototype_error}</p>
+            </div>
+            <button
+              onClick={onPrototype}
               className="shrink-0 text-xs font-mono px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950 transition-colors"
             >
               ↻ Retry
@@ -198,6 +249,11 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
               </div>
             ) : null
           )}
+          {idea.decisions && idea.decisions.length > 0 && (
+            <div className="pt-4 border-t border-zinc-900">
+              <DecisionLog decisions={idea.decisions} />
+            </div>
+          )}
         </div>
       )}
 
@@ -232,7 +288,7 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
                 Re-analyze
               </button>
               <button
-                onClick={() => { onStatusUpdate('selected_prototype'); onPrototype() }}
+                onClick={queueAndBuild}
                 className="text-sm font-mono px-4 py-2 rounded border border-purple-900 text-purple-400 hover:bg-purple-950 transition-colors"
               >
                 Build Prototype →
@@ -265,25 +321,11 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
               Dismiss
             </button>
           ) : (
-            <div className="flex items-center gap-2 ml-auto">
-              <input
-                value={dismissReason}
-                onChange={e => setDismissReason(e.target.value)}
-                placeholder="Reason (optional)"
-                className="text-xs font-mono bg-zinc-900 border border-zinc-800 rounded px-2 py-1.5 text-zinc-300 placeholder-zinc-600 w-48 focus:outline-none"
+            <div className="ml-auto">
+              <KillReasonPicker
+                onConfirm={(reason, note) => { setDismissOpen(false); onStatusUpdate('dismissed', reason, note) }}
+                onCancel={() => setDismissOpen(false)}
               />
-              <button
-                onClick={() => { onStatusUpdate('dismissed', dismissReason || undefined); setDismissOpen(false) }}
-                className="text-xs font-mono text-red-400 hover:text-red-300"
-              >
-                Confirm
-              </button>
-              <button
-                onClick={() => setDismissOpen(false)}
-                className="text-xs font-mono text-zinc-600 hover:text-zinc-400"
-              >
-                Cancel
-              </button>
             </div>
           )}
         </div>
@@ -327,7 +369,7 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
             </span>
           )}
           <button
-            onClick={() => onStatusUpdate('restore' as IdeaStatus)}
+            onClick={() => onStatusUpdate('restore')}
             className="text-sm font-mono px-4 py-2 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-900 transition-colors ml-auto"
           >
             ↩ Restore

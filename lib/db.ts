@@ -67,7 +67,32 @@ function initSchema(db: Database.Database) {
       dismiss_reason TEXT,
       analysis_stage TEXT,
       analysis_error TEXT,
+      prototype_error TEXT,
       embedding BLOB
+    );
+
+    -- One row per status transition: the audit trail behind every gate.
+    CREATE TABLE IF NOT EXISTS decisions (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT NOT NULL REFERENCES ideas(id),
+      from_status TEXT NOT NULL,
+      to_status TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      reason TEXT,
+      note TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    -- Reviewable stage outputs (spec, mock, build log, experiment evidence).
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT NOT NULL REFERENCES ideas(id),
+      stage TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      kind TEXT NOT NULL,
+      content TEXT,
+      path TEXT,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS analyses (
@@ -137,6 +162,8 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_ideas_created  ON ideas(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_ideas_sector   ON ideas(market_sector);
     CREATE INDEX IF NOT EXISTS idx_usage_date     ON usage_log(date);
+    CREATE INDEX IF NOT EXISTS idx_decisions_idea ON decisions(idea_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_idea ON artifacts(idea_id, stage, version DESC);
   `)
 
   // Migration: add per-direction token columns to usage_log if upgrading an
@@ -157,7 +184,7 @@ function initSchema(db: Database.Database) {
   for (const col of ['score_technical', 'score_deployment', 'score_barrier', 'score_appetite', 'score_market_size']) {
     if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} REAL`)
   }
-  for (const col of ['analysis_stage', 'analysis_error']) {
+  for (const col of ['analysis_stage', 'analysis_error', 'prototype_error']) {
     if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} TEXT`)
   }
   if (!ideaCols.has('embedding')) db.exec(`ALTER TABLE ideas ADD COLUMN embedding BLOB`)
@@ -270,6 +297,30 @@ export function setConfig(key: string, value: unknown) {
   `).run(key, JSON.stringify(value), new Date().toISOString())
 }
 
+// ── Artifacts ───────────────────────────────────────────────────────────────
+
+// Store a stage output. Version auto-increments per (idea, stage, kind) so
+// iterations (mock v1, v2, …) are kept side by side.
+export function addArtifact(a: { ideaId: string; stage: string; kind: string; content?: string | null; path?: string | null }) {
+  const db = getDb()
+  const { next } = db.prepare(
+    `SELECT COALESCE(MAX(version), 0) + 1 AS next FROM artifacts WHERE idea_id = ? AND stage = ? AND kind = ?`
+  ).get(a.ideaId, a.stage, a.kind) as { next: number }
+  const id = crypto.randomUUID()
+  db.prepare(`
+    INSERT INTO artifacts (id, idea_id, stage, version, kind, content, path, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, a.ideaId, a.stage, next, a.kind, a.content ?? null, a.path ?? null, new Date().toISOString())
+  return { id, version: next }
+}
+
+export function getArtifacts(ideaId: string, stage?: string) {
+  const db = getDb()
+  return stage
+    ? db.prepare(`SELECT * FROM artifacts WHERE idea_id = ? AND stage = ? ORDER BY version DESC`).all(ideaId, stage)
+    : db.prepare(`SELECT * FROM artifacts WHERE idea_id = ? ORDER BY stage, version DESC`).all(ideaId)
+}
+
 export function getIdeaWithRelations(ideaId: string) {
   const db = getDb()
   const row = db.prepare('SELECT * FROM ideas WHERE id = ?').get(ideaId) as Record<string, unknown> | undefined
@@ -278,15 +329,17 @@ export function getIdeaWithRelations(ideaId: string) {
   const analysis = db.prepare('SELECT * FROM analyses WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
   const prototype = db.prepare('SELECT * FROM prototypes WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
   const vcReview = db.prepare('SELECT * FROM vc_reviews WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
+  const decisions = db.prepare('SELECT * FROM decisions WHERE idea_id = ? ORDER BY created_at DESC LIMIT 50').all(ideaId) as Record<string, unknown>[]
 
-  return deserializeIdea(row, analysis, prototype, vcReview)
+  return deserializeIdea(row, analysis, prototype, vcReview, decisions)
 }
 
 export function deserializeIdea(
   row: Record<string, unknown>,
   analysis?: Record<string, unknown>,
   prototype?: Record<string, unknown>,
-  vcReview?: Record<string, unknown>
+  vcReview?: Record<string, unknown>,
+  decisions?: Record<string, unknown>[]
 ) {
   const idea: Record<string, unknown> = {
     ...row,
@@ -335,6 +388,8 @@ export function deserializeIdea(
       needs_to_be_true: arr(vcReview.needs_to_be_true),
     }
   }
+
+  if (decisions) idea.decisions = decisions
 
   return idea
 }

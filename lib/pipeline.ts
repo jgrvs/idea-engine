@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { getDb, logUsage, getIdeaWithRelations, getConfig } from './db'
+import { getDb, logUsage, getConfig } from './db'
 import {
   composeAnalyzePrompt,
   VC_SYSTEM,
@@ -10,6 +10,7 @@ import {
   type GenerateConfig,
 } from './prompts'
 import { writeSandbox } from './sandbox'
+import { transition } from './stages'
 import { computeViability, DEFAULT_SCORING, type ScoringConfig } from './scoring'
 import { semanticFilter } from './dedup'
 import { ideaEmbedText, toBlob } from './embeddings'
@@ -188,19 +189,22 @@ export async function runGenerate(domain?: string, count?: number) {
 
 // ── Stage 3: Analyze ──────────────────────────────────────────────────────────
 
+// Gate + kickoff. The transition to `analyzing` runs synchronously and throws
+// a TransitionError if the idea isn't in a state that allows analysis, so the
+// route can answer 409 before any model call. The job itself runs detached.
+export function startAnalyze(ideaId: string, actor: 'human' | 'auto' = 'human') {
+  transition(ideaId, 'analyzing', { actor })
+  void runAnalyze(ideaId).catch(err => console.error('[analyze job]', err))
+}
+
 // Runs two agents in sequence: a venture analyst, then a skeptical VC who
-// critiques the analyst's output. Designed to run as a background job — it owns
-// its own status transitions and persists any error to ideas.analysis_error
-// rather than throwing into the caller (the route fires it and returns).
+// critiques the analyst's output. Assumes the idea is already `analyzing`
+// (see startAnalyze). Owns its own completion/failure transitions and never
+// throws into the caller.
 export async function runAnalyze(ideaId: string) {
   const db = getDb()
   const idea = db.prepare('SELECT * FROM ideas WHERE id = ?').get(ideaId) as Record<string, unknown>
   if (!idea) throw new Error(`Idea ${ideaId} not found`)
-
-  const now = new Date().toISOString()
-  db.prepare(`
-    UPDATE ideas SET status='analyzing', analysis_stage='analyst', analysis_error=NULL, analysis_started_at=? WHERE id=?
-  `).run(now, ideaId)
 
   try {
     const ideaContext = [
@@ -286,24 +290,28 @@ export async function runAnalyze(ideaId: string) {
     )
     logUsage('analyze', ideaId, vcMsg.usage.input_tokens, vcMsg.usage.output_tokens)
 
-    db.prepare(`
-      UPDATE ideas SET status='analyzed', analysis_stage=NULL, analysis_completed_at=? WHERE id=?
-    `).run(new Date().toISOString(), ideaId)
-
-    return getIdeaWithRelations(ideaId)
+    return transition(ideaId, 'analyzed', { actor: 'auto' })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[runAnalyze ${ideaId}]`, message)
-    // Revert to Queued so the user can retry, and persist the error for display.
-    db.prepare(`
-      UPDATE ideas SET status='selected_analysis', analysis_stage=NULL, analysis_error=? WHERE id=?
-    `).run(message, ideaId)
+    // Revert to Queued so the user can retry; the error lands in
+    // ideas.analysis_error and the decisions log.
+    transition(ideaId, 'selected_analysis', { actor: 'auto', reason: message })
     return null
   }
 }
 
 // ── Stage 5: Prototype ────────────────────────────────────────────────────────
 
+// Gate + kickoff, same shape as startAnalyze: synchronous transition (409 on
+// an illegal move), then the long model call runs detached.
+export function startPrototype(ideaId: string, actor: 'human' | 'auto' = 'human') {
+  transition(ideaId, 'prototyping', { actor })
+  void runPrototype(ideaId).catch(err => console.error('[prototype job]', err))
+}
+
+// Assumes the idea is already `prototyping` (see startPrototype). Owns its own
+// completion/failure transitions and never throws into the caller.
 export async function runPrototype(ideaId: string) {
   const db = getDb()
   const idea = db.prepare(`
@@ -315,9 +323,6 @@ export async function runPrototype(ideaId: string) {
   `).get(ideaId) as Record<string, unknown>
 
   if (!idea) throw new Error(`Idea ${ideaId} not found`)
-
-  const now = new Date().toISOString()
-  db.prepare(`UPDATE ideas SET status='prototyping', prototype_started_at=? WHERE id=?`).run(now, ideaId)
 
   try {
     const userContent = [
@@ -350,39 +355,48 @@ export async function runPrototype(ideaId: string) {
 
     const completedAt = new Date().toISOString()
 
-    db.transaction(() => {
-      db.prepare(`
-        INSERT INTO prototypes
-          (id, idea_id, directory_path, file_count, file_tree, stack, readme, tokens_used, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        crypto.randomUUID(), ideaId, dirPath,
-        proto.files.length,
-        JSON.stringify(proto.files),
-        JSON.stringify(proto.stack ?? []),
-        proto.readme ?? null,
-        tokens, completedAt
-      )
-
-      db.prepare(`UPDATE ideas SET status='prototyped', prototype_completed_at=? WHERE id=?`)
-        .run(completedAt, ideaId)
-    })()
+    db.prepare(`
+      INSERT INTO prototypes
+        (id, idea_id, directory_path, file_count, file_tree, stack, readme, tokens_used, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(), ideaId, dirPath,
+      proto.files.length,
+      JSON.stringify(proto.files),
+      JSON.stringify(proto.stack ?? []),
+      proto.readme ?? null,
+      tokens, completedAt
+    )
 
     logUsage('prototype', ideaId, msg.usage.input_tokens, msg.usage.output_tokens)
-    return getIdeaWithRelations(ideaId)
+    return transition(ideaId, 'prototyped', { actor: 'auto' })
   } catch (err) {
-    db.prepare(`UPDATE ideas SET status='selected_prototype' WHERE id=?`).run(ideaId)
-    throw err
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[runPrototype ${ideaId}]`, message)
+    // Back to the queue with the error attached (ideas.prototype_error + decisions).
+    transition(ideaId, 'selected_prototype', { actor: 'auto', reason: message })
+    return null
   }
 }
 
 // ── Nightly prototype run (called by scheduler) ───────────────────────────────
 
+// Each idea is isolated: a failed transition or build logs and moves on rather
+// than aborting the rest of the queue.
 export async function runNightlyPrototypes() {
   const db = getDb()
   const selected = db.prepare(`SELECT id FROM ideas WHERE status = 'selected_prototype'`).all() as { id: string }[]
   console.log(`[pipeline] Nightly prototype run: ${selected.length} ideas queued`)
+  let ok = 0, failed = 0
   for (const { id } of selected) {
-    await runPrototype(id)
+    try {
+      transition(id, 'prototyping', { actor: 'auto', reason: 'nightly run' })
+      const result = await runPrototype(id)
+      if (result) ok++; else failed++
+    } catch (err) {
+      failed++
+      console.error(`[pipeline] nightly prototype ${id} skipped:`, err instanceof Error ? err.message : err)
+    }
   }
+  console.log(`[pipeline] Nightly prototype run done: ${ok} built, ${failed} failed`)
 }

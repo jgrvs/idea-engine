@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDb, getIdeaWithRelations } from '@/lib/db'
+import { getIdeaWithRelations } from '@/lib/db'
+import { isRequestable, restoreTarget, transition, TransitionError } from '@/lib/stages'
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -12,44 +13,25 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
 }
 
+// Move one idea through the state machine. Body: { status, reason?, note? }.
+// `status` is a human-settable status or 'restore'. Illegal moves get 409;
+// a kill without a reason gets 409 with the message explaining what's needed.
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   try {
-    const body = await req.json() as { status?: string; dismiss_reason?: string }
-    const db = getDb()
-    const now = new Date().toISOString()
-
-    const allowed = new Set(['selected_analysis', 'selected_prototype', 'dismissed', 'generated', 'restore'])
-    if (body.status && !allowed.has(body.status)) {
+    const body = await req.json() as { status?: string; reason?: string; note?: string }
+    if (!isRequestable(body.status)) {
       return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
     }
 
-    if (body.status === 'dismissed') {
-      db.prepare(`UPDATE ideas SET status='dismissed', dismissed_at=?, dismiss_reason=? WHERE id=?`)
-        .run(now, body.dismiss_reason ?? null, id)
-    } else if (body.status === 'restore') {
-      // Send a dismissed idea back to the furthest stage it had reached
-      const row = db.prepare(`
-        SELECT
-          (SELECT COUNT(*) FROM prototypes WHERE idea_id = ?) AS has_proto,
-          (SELECT COUNT(*) FROM analyses   WHERE idea_id = ?) AS has_analysis
-      `).get(id, id) as { has_proto: number; has_analysis: number }
-      const restored = row.has_proto > 0 ? 'prototyped' : row.has_analysis > 0 ? 'analyzed' : 'generated'
-      db.prepare(`UPDATE ideas SET status=?, dismissed_at=NULL, dismiss_reason=NULL WHERE id=?`)
-        .run(restored, id)
-    } else if (body.status === 'selected_analysis') {
-      db.prepare(`UPDATE ideas SET status='selected_analysis', selected_for_analysis_at=? WHERE id=?`)
-        .run(now, id)
-    } else if (body.status === 'selected_prototype') {
-      db.prepare(`UPDATE ideas SET status='selected_prototype', selected_for_prototype_at=? WHERE id=?`)
-        .run(now, id)
-    } else if (body.status) {
-      db.prepare(`UPDATE ideas SET status=? WHERE id=?`).run(body.status, id)
-    }
-
-    const idea = getIdeaWithRelations(id)
+    const target = body.status === 'restore' ? restoreTarget(id) : body.status
+    const idea = transition(id, target, { actor: 'human', reason: body.reason, note: body.note })
     return NextResponse.json(idea)
   } catch (err) {
+    if (err instanceof TransitionError) {
+      return NextResponse.json({ error: err.message }, { status: err.httpStatus })
+    }
+    console.error('[PATCH /api/ideas/:id]', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }
 }
