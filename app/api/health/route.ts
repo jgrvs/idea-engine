@@ -7,7 +7,6 @@ export async function GET() {
   const checks = {
     api_key_present: key.length > 0,
     api_key_format: key.trimEnd().startsWith('sk-ant-'),
-    api_key_length: key.trimEnd().length,
     api_key_has_whitespace: key !== key.trim(),
     database: false,
     database_error: null as string | null,
