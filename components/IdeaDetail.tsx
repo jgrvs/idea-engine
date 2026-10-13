@@ -1,12 +1,16 @@
 'use client'
 
 import { useState } from 'react'
-import { PROCESSING_STATUSES, type Decision, type Idea, type IdeaStatus, type KillReason, type Spec, type VcReview } from '@/lib/types'
+import {
+  PROCESSING_STATUSES,
+  type Decision, type Idea, type IdeaStatus, type KillReason, type MockKind, type Spec, type VcReview,
+} from '@/lib/types'
 import { StatusBadge } from './StatusBadge'
 import AnalysisView from './AnalysisView'
-import PrototypeView from './PrototypeView'
 import SpecView from './SpecView'
 import MockView from './MockView'
+import ExperimentsView from './ExperimentsView'
+import SliceView from './SliceView'
 import KillReasonPicker from './KillReasonPicker'
 
 const FUND_STYLE: Record<string, string> = {
@@ -25,7 +29,9 @@ const BTN = 'text-sm font-mono px-4 py-2 neon'
 const BTN_BLUE = `${BTN} text-blue-400`
 const BTN_CYAN = `${BTN} text-cyan-400`
 const BTN_TEAL = `${BTN} text-teal-300`
+const BTN_ORANGE = `${BTN} text-orange-400`
 const BTN_PURPLE = `${BTN} text-purple-400`
+const BTN_GREEN = `${BTN} text-green-400`
 const BTN_GREY = `${BTN} text-zinc-400 hover:text-cyan-300`
 
 function VcList({ label, items, marker }: { label: string; items: string[] | null; marker: string }) {
@@ -93,7 +99,7 @@ function DecisionLog({ decisions }: { decisions: Decision[] }) {
   )
 }
 
-function ErrorBanner({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
+function ErrorBanner({ title, message, onRetry }: { title: string; message: string; onRetry?: () => void }) {
   return (
     <div className="mb-6 rounded border border-red-900 bg-red-950/40 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -101,9 +107,11 @@ function ErrorBanner({ title, message, onRetry }: { title: string; message: stri
           <p className="text-xs font-mono text-red-400 mb-1">{title}</p>
           <p className="text-xs font-mono text-red-300/80 break-words">{message}</p>
         </div>
-        <button onClick={onRetry} className="shrink-0 text-xs font-mono px-3 py-1.5 neon text-red-300">
-          ↻ Retry
-        </button>
+        {onRetry && (
+          <button onClick={onRetry} className="shrink-0 text-xs font-mono px-3 py-1.5 neon text-red-300">
+            ↻ Retry
+          </button>
+        )}
       </div>
     </div>
   )
@@ -113,9 +121,11 @@ interface Props {
   idea: Idea
   onAnalyze: () => void
   onSpec: () => void
-  onMock: (feedback?: string) => void
+  onMock: (opts?: { feedback?: string; kind?: MockKind }) => void
   onSaveSpec: (spec: Spec) => Promise<boolean>
-  onPrototype: () => void
+  onSlice: () => void
+  // Replace this idea with a fresher copy (after an experiment edit).
+  onIdeaChange: (idea: Idea) => void
   // Resolves true when the server accepted the move; false on a gate rejection.
   onStatusUpdate: (status: IdeaStatus | 'restore', reason?: KillReason, note?: string) => Promise<boolean>
 }
@@ -160,35 +170,76 @@ function ScoreBreakdown({ idea }: { idea: Idea }) {
 
 const PROCESSING_TEXT: Partial<Record<IdeaStatus, string>> = {
   specing: '⟳ Drafting the one-page spec…',
-  mocking: '⟳ Building the clickable mock…',
-  prototyping: '⟳ Building prototype…',
+  mocking: '⟳ Building the mock…',
+  slicing: '⟳ Building the slice…',
 }
 
-type Tab = 'brief' | 'analysis' | 'spec' | 'mock' | 'prototype'
+type Tab = 'brief' | 'analysis' | 'spec' | 'mock' | 'validate' | 'slice'
+const TABS: readonly Tab[] = ['brief', 'analysis', 'spec', 'mock', 'validate', 'slice']
 
-export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec, onPrototype, onStatusUpdate }: Props) {
+// Gates that need a sentence from the human before they proceed. One inline
+// box serves all three; which one is open decides its wording and its action.
+type Ask = 'iterate' | 'override' | 'broken'
+const ASK_COPY: Record<Ask, { label: string; placeholder: string }> = {
+  iterate: {
+    label: 'What should change in the next version?',
+    placeholder: 'e.g. The first screen should be the queue, not a dashboard. Drop the settings page.',
+  },
+  override: {
+    label: 'No assumption is confirmed yet. Why build anyway? This goes on the record.',
+    placeholder: 'e.g. The only way to test this one is to put working software in front of two pilot users.',
+  },
+  broken: {
+    label: 'What is broken? This is recorded and shown on the idea.',
+    placeholder: 'e.g. The checklist renders, but ticking an item does not persist after reload.',
+  },
+}
+
+// States from which the validation tab makes sense even with no rows yet.
+const VALIDATION_STAGES: readonly IdeaStatus[] = ['validating', 'selected_slice', 'slicing', 'slice_built', 'slice_failed', 'slice_verified']
+
+export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec, onSlice, onIdeaChange, onStatusUpdate }: Props) {
   const [tab, setTab] = useState<Tab>('brief')
   const [dismissOpen, setDismissOpen] = useState(false)
-  const [iterateOpen, setIterateOpen] = useState(false)
-  const [feedback, setFeedback] = useState('')
+  const [ask, setAsk] = useState<Ask | null>(null)
+  const [askText, setAskText] = useState('')
 
   const isProcessing = PROCESSING_STATUSES.includes(idea.status)
-  const hasMock = (idea.mock_versions?.length ?? 0) > 0
+  const mocks = idea.mock_versions ?? []
+  const landings = idea.landing_versions ?? []
+  const experiments = idea.experiments ?? []
+  const confirmed = experiments.filter(e => e.status === 'confirmed').length
+  const hasMock = mocks.length + landings.length > 0
 
   const tabEnabled: Record<Tab, boolean> = {
     brief: true,
     analysis: !!idea.analysis,
     spec: !!idea.spec,
     mock: hasMock,
-    prototype: !!idea.prototype,
+    validate: experiments.length > 0 || VALIDATION_STAGES.includes(idea.status),
+    slice: !!idea.slice,
   }
 
-  const submitIterate = () => {
-    if (!feedback.trim()) return
-    onMock(feedback.trim())
-    setFeedback('')
-    setIterateOpen(false)
+  const closeAsk = () => { setAsk(null); setAskText('') }
+  const submitAsk = () => {
+    const text = askText.trim()
+    if (!ask || !text) return
+    if (ask === 'iterate') onMock({ feedback: text })
+    if (ask === 'override') onStatusUpdate('selected_slice', undefined, text)
+    if (ask === 'broken') onStatusUpdate('slice_failed', undefined, text)
+    closeAsk()
   }
+  const askSubmitLabel =
+    ask === 'iterate' ? `Generate v${(mocks[0]?.version ?? 0) + 1} →`
+    : ask === 'override' ? 'Queue the slice anyway →'
+    : 'Mark broken'
+
+  // What "Retry" means depends on where the failed stage left the idea.
+  const retryStage: (() => void) | undefined =
+    idea.status === 'analyzed' ? onSpec
+    : idea.status === 'spec_ready' ? () => onMock()
+    : idea.status === 'slice_failed' || idea.status === 'selected_slice' ? onSlice
+    : undefined
 
   return (
     <div className="max-w-3xl mx-auto px-8 py-8">
@@ -217,24 +268,17 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
         )}
       </div>
 
-      {/* Error banners (one per stage that can fail) */}
+      {/* Error banners. stage_error arrives already labelled with its stage. */}
       {idea.analysis_error && idea.status !== 'analyzing' && (
         <ErrorBanner title="Analysis failed" message={idea.analysis_error} onRetry={onAnalyze} />
       )}
       {idea.stage_error && !isProcessing && (
-        <ErrorBanner
-          title={idea.status === 'spec_ready' ? 'Mock failed' : 'Spec failed'}
-          message={idea.stage_error}
-          onRetry={idea.status === 'spec_ready' ? () => onMock() : onSpec}
-        />
-      )}
-      {idea.prototype_error && idea.status !== 'prototyping' && (
-        <ErrorBanner title="Prototype failed" message={idea.prototype_error} onRetry={onPrototype} />
+        <ErrorBanner title="Last stage" message={idea.stage_error} onRetry={retryStage} />
       )}
 
       {/* Tab nav */}
       <div className="flex gap-1 border-b border-zinc-800 mb-6">
-        {(['brief', 'analysis', 'spec', 'mock', 'prototype'] as const).map(t => {
+        {TABS.map(t => {
           const disabled = !tabEnabled[t]
           return (
             <button
@@ -301,31 +345,46 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
       )}
 
       {tab === 'mock' && hasMock && (
-        <MockView ideaId={idea.id} versions={idea.mock_versions ?? []} />
+        <MockView ideaId={idea.id} versions={mocks} landingVersions={landings} />
       )}
 
-      {tab === 'prototype' && idea.prototype && (
-        <PrototypeView prototype={idea.prototype} />
+      {tab === 'validate' && tabEnabled.validate && (
+        <ExperimentsView
+          ideaId={idea.id}
+          experiments={experiments}
+          editable={idea.status === 'validating'}
+          hasLanding={landings.length > 0}
+          onIdea={onIdeaChange}
+        />
+      )}
+
+      {tab === 'slice' && idea.slice && (
+        <SliceView slice={idea.slice} />
       )}
 
       {/* Actions: one row per gate the idea is currently parked at */}
       {!isProcessing && idea.status !== 'dismissed' && (
         <div className="mt-8 pt-6 border-t border-zinc-800 space-y-3">
-          {idea.status === 'mock_ready' && iterateOpen && (
+          {ask && (
             <div className="space-y-2">
-              <p className="text-xs font-mono text-zinc-500">What should change in the next version?</p>
+              <p className="text-xs font-mono text-zinc-500">{ASK_COPY[ask].label}</p>
               <textarea
-                value={feedback}
-                onChange={e => setFeedback(e.target.value)}
+                value={askText}
+                onChange={e => setAskText(e.target.value)}
                 rows={3}
-                placeholder="e.g. The first screen should be the queue, not a dashboard. Drop the settings page."
-                className="w-full text-sm font-sans bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-600 resize-y"
+                autoFocus
+                placeholder={ASK_COPY[ask].placeholder}
+                className="w-full text-sm font-sans bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 placeholder-zinc-600 focus:outline-none resize-y"
               />
-              <div className="flex gap-3">
-                <button onClick={submitIterate} disabled={!feedback.trim()} className={`${BTN_TEAL} disabled:opacity-40`}>
-                  Generate v{(idea.mock_versions?.[0]?.version ?? 0) + 1} →
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={submitAsk}
+                  disabled={!askText.trim()}
+                  className={ask === 'broken' ? `${BTN} text-red-400` : ask === 'override' ? BTN_PURPLE : BTN_TEAL}
+                >
+                  {askSubmitLabel}
                 </button>
-                <button onClick={() => setIterateOpen(false)} className="text-xs font-mono text-zinc-600 hover:text-zinc-400">Cancel</button>
+                <button onClick={closeAsk} className="text-xs font-mono text-zinc-600 hover:text-zinc-400">Cancel</button>
               </div>
             </div>
           )}
@@ -352,21 +411,47 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
                 <button onClick={() => onMock()} className={BTN_TEAL}>Approve spec &amp; build mock →</button>
               </>
             )}
-            {idea.status === 'mock_ready' && !iterateOpen && (
+            {idea.status === 'mock_ready' && !ask && (
               <>
                 <button onClick={() => onStatusUpdate('spec_ready')} className={BTN_GREY}>← Back to spec</button>
-                <button onClick={() => setIterateOpen(true)} className={BTN_GREY}>Iterate mock…</button>
-                <button onClick={() => onStatusUpdate('selected_prototype')} className={BTN_PURPLE}>Advance to prototype →</button>
+                <button onClick={() => setAsk('iterate')} className={BTN_GREY}>Iterate mock…</button>
+                <button onClick={() => onStatusUpdate('validating')} className={BTN_ORANGE}>Advance to validation →</button>
               </>
             )}
-            {idea.status === 'selected_prototype' && (
+            {idea.status === 'validating' && !ask && (
               <>
-                {hasMock && <button onClick={() => onStatusUpdate('mock_ready')} className={BTN_GREY}>← Back to mock</button>}
-                <button onClick={onPrototype} className={BTN_PURPLE}>Build Prototype →</button>
+                <button onClick={() => onStatusUpdate('mock_ready')} className={BTN_GREY}>← Back to mock</button>
+                <button onClick={() => onMock({ kind: 'landing' })} className={BTN_GREY}>
+                  {landings.length ? 'New landing page' : 'Generate landing page'}
+                </button>
+                <button
+                  onClick={() => (confirmed > 0 ? onStatusUpdate('selected_slice') : setAsk('override'))}
+                  className={BTN_PURPLE}
+                >
+                  Advance to slice →
+                </button>
               </>
             )}
-            {idea.status === 'prototyped' && (
-              <button onClick={() => onStatusUpdate('selected_prototype')} className={BTN_GREY}>Rebuild prototype</button>
+            {idea.status === 'selected_slice' && (
+              <>
+                <button onClick={() => onStatusUpdate('validating')} className={BTN_GREY}>← Back to validation</button>
+                <button onClick={onSlice} className={BTN_PURPLE}>Build slice →</button>
+              </>
+            )}
+            {idea.status === 'slice_failed' && (
+              <>
+                <button onClick={() => onStatusUpdate('validating')} className={BTN_GREY}>← Back to validation</button>
+                <button onClick={onSlice} className={BTN_PURPLE}>Rebuild slice →</button>
+              </>
+            )}
+            {idea.status === 'slice_built' && !ask && (
+              <>
+                <button onClick={() => setAsk('broken')} className={BTN_GREY}>Mark broken…</button>
+                <button onClick={() => onStatusUpdate('slice_verified')} className={BTN_GREEN}>I ran it and it works ✓</button>
+              </>
+            )}
+            {idea.status === 'slice_verified' && (
+              <button onClick={() => onStatusUpdate('selected_slice')} className={BTN_GREY}>Queue a rebuild</button>
             )}
 
             {/* Dismiss */}
@@ -386,6 +471,13 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
               </div>
             )}
           </div>
+
+          {idea.status === 'selected_slice' && (
+            <p className="text-xs font-mono text-zinc-600 leading-relaxed">
+              Building a slice installs dependencies, then builds and briefly runs code a model wrote, on this machine.
+              It takes several minutes. Queued slices also build at 11 PM.
+            </p>
+          )}
         </div>
       )}
 
@@ -400,6 +492,9 @@ export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec
                   : '⟳ Analyst — researching market, competitors, feasibility…'
               : PROCESSING_TEXT[idea.status] ?? '⟳ Working…'}
           </p>
+          {idea.stage_progress && idea.status !== 'analyzing' && (
+            <p className="text-xs font-mono text-zinc-500 mt-2">{idea.stage_progress}</p>
+          )}
           {idea.status === 'analyzing' && (
             <div className="flex gap-2 mt-3">
               {(['analyst', 'vc', 'verdict'] as const).map((s, i) => {

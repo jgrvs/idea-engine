@@ -1,55 +1,47 @@
 import fs from 'fs'
 import path from 'path'
-import type { PrototypeFile } from './types'
 
-// Where generated prototypes are written. Set SANDBOX_PATH to an absolute path
-// for your machine (e.g. C:\projects\prototypes on Windows, or
+// Where generated mocks and slices are written. Set SANDBOX_PATH to an absolute
+// path for your machine (e.g. C:\projects\prototypes on Windows, or
 // /srv/idea-engine/prototypes on a Linux server). The fallback is a `prototypes`
 // directory sibling to the project root, which is portable across OSes.
-const SANDBOX_BASE = process.env.SANDBOX_PATH ?? path.resolve(process.cwd(), '..', 'prototypes')
+// The ignore comment stops the bundler from tracing the whole parent directory
+// into the build just because a path is computed from it.
+const SANDBOX_BASE = process.env.SANDBOX_PATH ?? path.resolve(/*turbopackIgnore: true*/ process.cwd(), '..', 'prototypes')
 
-export function writeSandbox(dirName: string, files: PrototypeFile[]): string {
-  const sandboxDir = path.resolve(SANDBOX_BASE)
-  const targetDir = path.join(sandboxDir, dirName)
-
-  // Ensure the target is inside the sandbox (prevent traversal)
-  if (!targetDir.startsWith(sandboxDir + path.sep) && targetDir !== sandboxDir) {
-    throw new Error(`Sandbox escape attempt: ${targetDir}`)
-  }
-
-  fs.mkdirSync(targetDir, { recursive: true })
-
-  for (const file of files) {
-    // Normalize and verify each file path stays inside targetDir
-    const filePath = path.join(targetDir, ...file.path.split('/'))
-    if (!filePath.startsWith(targetDir + path.sep)) {
-      console.warn(`Skipping unsafe file path: ${file.path}`)
-      continue
-    }
-
-    fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    fs.writeFileSync(filePath, file.content, 'utf-8')
-  }
-
-  return targetDir
+export function sandboxRoot(): string {
+  return path.resolve(SANDBOX_BASE)
 }
 
 export function ensureSandboxExists() {
-  fs.mkdirSync(path.resolve(SANDBOX_BASE), { recursive: true })
+  fs.mkdirSync(sandboxRoot(), { recursive: true })
 }
 
 export function slugify(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'idea'
 }
 
-// Mocks live beside the eventual prototype: <sandbox>/<slug>/mock-v<N>.html.
+// Everything for one idea lives under <sandbox>/<slug>/. The slug comes from
+// model-written text, so confirm the result is still inside the sandbox.
+export function ideaDir(title: string): string {
+  const root = sandboxRoot()
+  const dir = path.join(root, slugify(title))
+  if (!dir.startsWith(root + path.sep)) throw new Error(`Sandbox escape attempt: ${dir}`)
+  return dir
+}
+
+// Mocks sit beside the eventual slice: <sandbox>/<slug>/<prefix>-v<N>.html.
 // Versions are kept side by side so an iteration never overwrites its parent.
-export function writeMockFile(slug: string, version: number, html: string): string {
-  const sandboxDir = path.resolve(SANDBOX_BASE)
-  const dir = path.join(sandboxDir, slugify(slug))
-  if (!dir.startsWith(sandboxDir + path.sep)) throw new Error(`Sandbox escape attempt: ${dir}`)
+export function writeMockFile(title: string, version: number, html: string, prefix: 'mock' | 'landing' = 'mock'): string {
+  const dir = ideaDir(title)
   fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, `mock-v${version}.html`)
+  const file = path.join(dir, `${prefix}-v${version}.html`)
   fs.writeFileSync(file, html, 'utf-8')
   return file
+}
+
+// The slice project: <sandbox>/<slug>/slice. One directory per idea, reused
+// across retries so dependencies are installed once.
+export function sliceDir(title: string): string {
+  return path.join(ideaDir(title), 'slice')
 }

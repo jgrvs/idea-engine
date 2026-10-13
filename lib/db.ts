@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import path from 'path'
 import fs from 'fs'
 import { computeViability, DEFAULT_SCORING, type ScoringConfig } from './scoring'
+import { MODELS, priceFor } from './llm'
 
 const DATA_DIR = path.join(process.cwd(), 'data')
 const DB_PATH = path.join(DATA_DIR, 'ideas.db')
@@ -166,8 +167,22 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_ideas_created  ON ideas(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_ideas_sector   ON ideas(market_sector);
     CREATE INDEX IF NOT EXISTS idx_usage_date     ON usage_log(date);
+    -- One test of one assumption. Seeded from the spec when validation starts.
+    CREATE TABLE IF NOT EXISTS experiments (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT NOT NULL REFERENCES ideas(id),
+      assumption TEXT NOT NULL,
+      method TEXT,
+      status TEXT NOT NULL DEFAULT 'planned',
+      result TEXT,
+      evidence_url TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_decisions_idea ON decisions(idea_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_artifacts_idea ON artifacts(idea_id, stage, version DESC);
+    CREATE INDEX IF NOT EXISTS idx_experiments_idea ON experiments(idea_id, created_at);
   `)
 
   // Migration: add per-direction token columns to usage_log if upgrading an
@@ -180,6 +195,11 @@ function initSchema(db: Database.Database) {
   if (!names.has('output_tokens')) {
     db.exec(`ALTER TABLE usage_log ADD COLUMN output_tokens INTEGER DEFAULT 0`)
   }
+  // Migration: per-model pricing and prompt-cache accounting.
+  if (!names.has('model')) db.exec(`ALTER TABLE usage_log ADD COLUMN model TEXT`)
+  for (const col of ['cache_read_tokens', 'cache_write_tokens']) {
+    if (!names.has(col)) db.exec(`ALTER TABLE usage_log ADD COLUMN ${col} INTEGER DEFAULT 0`)
+  }
 
   // Migration: add viability sub-score columns to ideas if upgrading.
   const ideaCols = new Set(
@@ -188,10 +208,24 @@ function initSchema(db: Database.Database) {
   for (const col of ['score_technical', 'score_deployment', 'score_barrier', 'score_appetite', 'score_market_size']) {
     if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} REAL`)
   }
-  for (const col of ['analysis_stage', 'analysis_error', 'prototype_error', 'stage_error']) {
+  for (const col of ['analysis_stage', 'analysis_error', 'prototype_error', 'stage_error', 'stage_progress']) {
     if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} TEXT`)
   }
   if (!ideaCols.has('embedding')) db.exec(`ALTER TABLE ideas ADD COLUMN embedding BLOB`)
+
+  // Migration: the one-shot prototype stage was retired in favour of
+  // validate -> slice. Ideas parked in its statuses fall back to the furthest
+  // stage they have an artifact for, so nothing is stranded in a status the
+  // state machine no longer knows.
+  db.exec(`
+    UPDATE ideas SET status = CASE
+      WHEN EXISTS (SELECT 1 FROM artifacts a WHERE a.idea_id = ideas.id AND a.stage = 'mock') THEN 'mock_ready'
+      WHEN EXISTS (SELECT 1 FROM artifacts a WHERE a.idea_id = ideas.id AND a.stage = 'spec') THEN 'spec_ready'
+      WHEN EXISTS (SELECT 1 FROM analyses  a WHERE a.idea_id = ideas.id) THEN 'analyzed'
+      ELSE 'generated'
+    END
+    WHERE status IN ('selected_prototype', 'prototyping', 'prototyped')
+  `)
 
   // Migration: reconciled verdict columns on analyses.
   const analysisCols = new Set(
@@ -222,31 +256,36 @@ export function getIdeasNeedingEmbedding(): { id: string; title: string; tagline
     .all() as { id: string; title: string; tagline: string | null; problem: string | null }[]
 }
 
+// `inputTokens` is the uncached input. Cache reads and writes are logged
+// separately because they are priced differently (see lib/llm.ts).
 export function logUsage(
   stage: string,
   ideaId: string | null,
   inputTokens: number,
-  outputTokens: number
+  outputTokens: number,
+  opts: { model?: string; cacheReadTokens?: number; cacheWriteTokens?: number } = {}
 ) {
   const db = getDb()
+  const cacheRead = opts.cacheReadTokens ?? 0
+  const cacheWrite = opts.cacheWriteTokens ?? 0
   db.prepare(`
-    INSERT INTO usage_log (id, date, stage, idea_id, input_tokens, output_tokens, tokens_used, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO usage_log
+      (id, date, stage, idea_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, tokens_used, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     crypto.randomUUID(),
     new Date().toISOString().slice(0, 10),
     stage,
     ideaId,
+    opts.model ?? MODELS.default,
     inputTokens,
     outputTokens,
-    inputTokens + outputTokens,
+    cacheRead,
+    cacheWrite,
+    inputTokens + outputTokens + cacheRead + cacheWrite,
     new Date().toISOString()
   )
 }
-
-// Sonnet 4.6 pricing, USD per 1M tokens
-const PRICE_INPUT_PER_M = 3.0
-const PRICE_OUTPUT_PER_M = 15.0
 
 export interface UsageSummary {
   month: string
@@ -260,26 +299,36 @@ export function getUsageSummary(): UsageSummary {
   const db = getDb()
   const month = new Date().toISOString().slice(0, 7) // YYYY-MM
 
+  // Group by model as well as stage so each row is priced at its own model's
+  // rate, then fold the models back together per stage.
   const rows = db.prepare(`
-    SELECT stage,
+    SELECT stage, model,
            SUM(input_tokens) as input_tokens,
            SUM(output_tokens) as output_tokens,
+           SUM(COALESCE(cache_read_tokens, 0)) as cache_read,
+           SUM(COALESCE(cache_write_tokens, 0)) as cache_write,
            COUNT(*) as calls
     FROM usage_log
     WHERE date LIKE ?
-    GROUP BY stage
-  `).all(`${month}%`) as { stage: string; input_tokens: number; output_tokens: number; calls: number }[]
+    GROUP BY stage, model
+  `).all(`${month}%`) as {
+    stage: string; model: string | null; input_tokens: number; output_tokens: number
+    cache_read: number; cache_write: number; calls: number
+  }[]
 
-  const cost = (inp: number, out: number) =>
-    (inp / 1_000_000) * PRICE_INPUT_PER_M + (out / 1_000_000) * PRICE_OUTPUT_PER_M
-
-  const byStage = rows.map(r => ({
-    stage: r.stage,
-    inputTokens: r.input_tokens ?? 0,
-    outputTokens: r.output_tokens ?? 0,
-    cost: cost(r.input_tokens ?? 0, r.output_tokens ?? 0),
-    calls: r.calls,
-  }))
+  const stages = new Map<string, { stage: string; inputTokens: number; outputTokens: number; cost: number; calls: number }>()
+  for (const r of rows) {
+    const p = priceFor(r.model)
+    const inp = r.input_tokens ?? 0, out = r.output_tokens ?? 0
+    const cost = (inp * p.input + out * p.output + r.cache_read * p.cacheRead + r.cache_write * p.cacheWrite) / 1_000_000
+    const s = stages.get(r.stage) ?? { stage: r.stage, inputTokens: 0, outputTokens: 0, cost: 0, calls: 0 }
+    s.inputTokens += inp + r.cache_read + r.cache_write
+    s.outputTokens += out
+    s.cost += cost
+    s.calls += r.calls
+    stages.set(r.stage, s)
+  }
+  const byStage = [...stages.values()]
 
   return {
     month,
@@ -346,33 +395,102 @@ export function getArtifact(ideaId: string, stage: string, kind: string, version
     : db.prepare(`SELECT * FROM artifacts WHERE idea_id = ? AND stage = ? AND kind = ? ORDER BY version DESC LIMIT 1`).get(ideaId, stage, kind) as ArtifactRow | undefined
 }
 
+// ── Experiments (validation stage) ──────────────────────────────────────────
+
+export function listExperiments(ideaId: string) {
+  return getDb().prepare(`SELECT * FROM experiments WHERE idea_id = ? ORDER BY created_at, rowid`).all(ideaId) as Record<string, unknown>[]
+}
+
+export function addExperiment(ideaId: string, assumption: string, method: string | null = null) {
+  const now = new Date().toISOString()
+  const id = crypto.randomUUID()
+  getDb().prepare(`
+    INSERT INTO experiments (id, idea_id, assumption, method, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'planned', ?, ?)
+  `).run(id, ideaId, assumption, method, now, now)
+  return id
+}
+
+// Seed one planned experiment per spec assumption, once. Re-entering
+// validation later never duplicates or resets what a human has recorded.
+export function seedExperiments(ideaId: string, assumptions: string[]) {
+  const db = getDb()
+  const { n } = db.prepare(`SELECT COUNT(*) AS n FROM experiments WHERE idea_id = ?`).get(ideaId) as { n: number }
+  if (n > 0) return 0
+  for (const a of assumptions) if (a?.trim()) addExperiment(ideaId, a.trim())
+  return assumptions.length
+}
+
+const EXPERIMENT_FIELDS = ['assumption', 'method', 'status', 'result', 'evidence_url'] as const
+
+export function updateExperiment(ideaId: string, expId: string, patch: Partial<Record<typeof EXPERIMENT_FIELDS[number], string | null>>) {
+  const sets: string[] = []
+  const params: unknown[] = []
+  for (const f of EXPERIMENT_FIELDS) {
+    if (f in patch) { sets.push(`${f} = ?`); params.push(patch[f] ?? null) }
+  }
+  if (!sets.length) return false
+  const res = getDb().prepare(`UPDATE experiments SET ${sets.join(', ')}, updated_at = ? WHERE id = ? AND idea_id = ?`)
+    .run(...params, new Date().toISOString(), expId, ideaId)
+  return res.changes > 0
+}
+
+export function deleteExperiment(ideaId: string, expId: string) {
+  return getDb().prepare(`DELETE FROM experiments WHERE id = ? AND idea_id = ?`).run(expId, ideaId).changes > 0
+}
+
+export function experimentCounts(ideaId: string) {
+  return getDb().prepare(`
+    SELECT COUNT(*) AS total,
+           COALESCE(SUM(status = 'confirmed'), 0) AS confirmed,
+           COALESCE(SUM(status = 'refuted'), 0) AS refuted
+    FROM experiments WHERE idea_id = ?
+  `).get(ideaId) as { total: number; confirmed: number; refuted: number }
+}
+
+// Live status line for long-running stages ("installing dependencies",
+// "agent · turn 7"). Cleared by the state machine on every transition.
+export function setStageProgress(ideaId: string, text: string | null) {
+  getDb().prepare(`UPDATE ideas SET stage_progress = ? WHERE id = ?`).run(text, ideaId)
+}
+
+type VersionRow = { version: number; path: string | null; created_at: string }
+
 export function getIdeaWithRelations(ideaId: string) {
   const db = getDb()
   const row = db.prepare('SELECT * FROM ideas WHERE id = ?').get(ideaId) as Record<string, unknown> | undefined
   if (!row) return null
 
   const analysis = db.prepare('SELECT * FROM analyses WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
-  const prototype = db.prepare('SELECT * FROM prototypes WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
   const vcReview = db.prepare('SELECT * FROM vc_reviews WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
   const decisions = db.prepare('SELECT * FROM decisions WHERE idea_id = ? ORDER BY created_at DESC LIMIT 50').all(ideaId) as Record<string, unknown>[]
   const spec = getArtifact(ideaId, 'spec', 'json')
   // Mock HTML is fetched on demand via GET /api/ideas/:id/mock; only list versions here.
-  const mocks = db.prepare(
-    `SELECT version, path, created_at FROM artifacts WHERE idea_id = ? AND stage = 'mock' AND kind = 'html' ORDER BY version DESC`
-  ).all(ideaId) as { version: number; path: string | null; created_at: string }[]
+  const versions = db.prepare(
+    `SELECT version, path, created_at FROM artifacts WHERE idea_id = ? AND stage = 'mock' AND kind = ? ORDER BY version DESC`
+  )
+  const mocks = versions.all(ideaId, 'html') as VersionRow[]
+  const landings = versions.all(ideaId, 'landing') as VersionRow[]
+  const experiments = listExperiments(ideaId)
+  const slice = getArtifact(ideaId, 'slice', 'json')
 
-  return deserializeIdea(row, analysis, prototype, vcReview, decisions, spec, mocks)
+  return deserializeIdea(row, { analysis, vcReview, decisions, spec, mocks, landings, experiments, slice })
 }
 
 export function deserializeIdea(
   row: Record<string, unknown>,
-  analysis?: Record<string, unknown>,
-  prototype?: Record<string, unknown>,
-  vcReview?: Record<string, unknown>,
-  decisions?: Record<string, unknown>[],
-  spec?: ArtifactRow,
-  mocks?: { version: number; path: string | null; created_at: string }[]
+  rel: {
+    analysis?: Record<string, unknown>
+    vcReview?: Record<string, unknown>
+    decisions?: Record<string, unknown>[]
+    spec?: ArtifactRow
+    mocks?: VersionRow[]
+    landings?: VersionRow[]
+    experiments?: Record<string, unknown>[]
+    slice?: ArtifactRow
+  } = {}
 ) {
+  const { analysis, vcReview, decisions, spec, mocks, landings, experiments, slice } = rel
   const idea: Record<string, unknown> = {
     ...row,
     named_competitors: row.named_competitors ? JSON.parse(row.named_competitors as string) : null,
@@ -402,14 +520,6 @@ export function deserializeIdea(
     }
   }
 
-  if (prototype) {
-    idea.prototype = {
-      ...prototype,
-      file_tree: prototype.file_tree ? JSON.parse(prototype.file_tree as string) : null,
-      stack: prototype.stack ? JSON.parse(prototype.stack as string) : null,
-    }
-  }
-
   if (vcReview) {
     const arr = (v: unknown) => (v ? JSON.parse(v as string) : null)
     idea.vc_review = {
@@ -427,6 +537,11 @@ export function deserializeIdea(
     try { idea.spec = { ...JSON.parse(spec.content), version: spec.version } } catch { /* ignore malformed */ }
   }
   if (mocks) idea.mock_versions = mocks
+  if (landings) idea.landing_versions = landings
+  if (experiments) idea.experiments = experiments
+  if (slice?.content) {
+    try { idea.slice = { ...JSON.parse(slice.content), version: slice.version } } catch { /* ignore malformed */ }
+  }
 
   return idea
 }

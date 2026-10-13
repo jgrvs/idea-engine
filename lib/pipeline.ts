@@ -1,22 +1,22 @@
-import Anthropic from '@anthropic-ai/sdk'
 import { getDb, logUsage, getConfig, addArtifact, getArtifact, getIdeaWithRelations } from './db'
+import { getClient, MODELS } from './llm'
 import {
   composeAnalyzePrompt,
   VC_SYSTEM,
   VERDICT_SYSTEM,
   SPEC_SYSTEM,
   composeMockPrompt,
-  PROTOTYPE_SYSTEM,
+  composeLandingPrompt,
   getTodayDomain,
   composeGeneratePrompt,
   DEFAULT_GENERATE_CONFIG,
   type GenerateConfig,
 } from './prompts'
-import { writeSandbox, writeMockFile, slugify } from './sandbox'
+import { writeMockFile } from './sandbox'
 import { transition } from './stages'
-import type { Spec } from './types'
+import type { IdeaStatus, MockKind, Spec } from './types'
 
-const MODEL = 'claude-sonnet-4-6'
+const MODEL = MODELS.default
 
 function loadGenerateConfig(): GenerateConfig {
   return { ...DEFAULT_GENERATE_CONFIG, ...getConfig<GenerateConfig>('generate', DEFAULT_GENERATE_CONFIG) }
@@ -55,14 +55,6 @@ function ideaContextBlock(idea: Record<string, unknown>): string {
 import { computeViability, DEFAULT_SCORING, type ScoringConfig } from './scoring'
 import { semanticFilter } from './dedup'
 import { ideaEmbedText, toBlob } from './embeddings'
-
-// Construct the client per call so a hot-reloaded API key is always picked up,
-// and fail loudly if the key is missing rather than sending an empty header.
-function getClient() {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set — check .env.local and restart the dev server')
-  return new Anthropic({ apiKey })
-}
 
 // Robustly pull the first complete JSON value out of a model response.
 // Bracket-balanced (respects strings/escapes) so it handles a top-level object
@@ -358,7 +350,7 @@ export async function runAnalyze(ideaId: string) {
     console.error(`[runAnalyze ${ideaId}]`, message)
     // Revert to Queued so the user can retry; the error lands in
     // ideas.analysis_error and the decisions log.
-    transition(ideaId, 'selected_analysis', { actor: 'auto', reason: message })
+    transition(ideaId, 'selected_analysis', { actor: 'auto', error: message })
     return null
   }
 }
@@ -375,7 +367,6 @@ export function startSpec(ideaId: string, actor: 'human' | 'auto' = 'human') {
 // One-page spec from idea + analysis + VC review. Stored as a versioned
 // artifact so human edits (PUT /spec) and redrafts sit side by side.
 export async function runSpec(ideaId: string) {
-  const db = getDb()
   const idea = getIdeaWithRelations(ideaId) as (Record<string, unknown> & {
     analysis?: Record<string, unknown>; vc_review?: Record<string, unknown>
   }) | null
@@ -404,10 +395,8 @@ export async function runSpec(ideaId: string) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[runSpec ${ideaId}]`, message)
-    transition(ideaId, 'analyzed', { actor: 'auto', reason: message })
+    transition(ideaId, 'analyzed', { actor: 'auto', error: message })
     return null
-  } finally {
-    void db
   }
 }
 
@@ -434,31 +423,58 @@ export function saveSpec(ideaId: string, spec: Spec) {
 
 // ── Stage 5: Mock ─────────────────────────────────────────────────────────────
 
-// Gate + kickoff. From spec_ready this is the approval; from mock_ready it is
-// an iteration and `feedback` is required so the next version has direction.
-export function startMock(ideaId: string, opts: { actor?: 'human' | 'auto'; feedback?: string } = {}) {
-  const actor = opts.actor ?? 'human'
-  const feedback = opts.feedback?.trim()
-  const status = (getDb().prepare('SELECT status FROM ideas WHERE id = ?').get(ideaId) as { status: string } | undefined)?.status
-  if (status === 'mock_ready' && !feedback) throw new Error('Iterating a mock needs feedback describing what to change')
-  transition(ideaId, 'mocking', { actor, reason: feedback ? 'iterate' : 'approve spec', note: feedback })
-  void runMock(ideaId, feedback).catch(err => console.error('[mock job]', err))
+// Which artifact kind and file prefix each mock kind is stored under.
+const MOCK_STORE: Record<MockKind, { kind: string; prefix: 'mock' | 'landing' }> = {
+  app:     { kind: 'html',    prefix: 'mock' },
+  landing: { kind: 'landing', prefix: 'landing' },
 }
 
-export async function runMock(ideaId: string, feedback?: string) {
+// Gate + kickoff. Three ways in:
+//   spec_ready            → approves the spec and builds the first app mock
+//   mock_ready/validating → iterates the app mock (feedback required)
+//   mock_ready/validating → generates a landing page for demand testing
+// The job returns the idea to wherever it was started from.
+export function startMock(ideaId: string, opts: { actor?: 'human' | 'auto'; feedback?: string; kind?: MockKind } = {}) {
+  const actor = opts.actor ?? 'human'
+  const kind: MockKind = opts.kind ?? 'app'
+  const feedback = opts.feedback?.trim()
+  const origin = (getDb().prepare('SELECT status FROM ideas WHERE id = ?').get(ideaId) as { status: IdeaStatus } | undefined)?.status
+
+  if (origin && origin !== 'spec_ready') {
+    if (kind === 'app' && !feedback) throw new Error('Iterating a mock needs feedback describing what to change')
+  } else if (kind === 'landing') {
+    throw new Error('Landing pages come after the app mock: approve the spec first')
+  }
+
+  const reason = kind === 'landing' ? 'landing page' : feedback ? 'iterate' : 'approve spec'
+  transition(ideaId, 'mocking', { actor, reason, note: feedback })
+  // `origin` is defined here: transition() throws for an unknown idea.
+  const returnTo: IdeaStatus = origin === 'spec_ready' ? 'mock_ready' : origin!
+  void runMock(ideaId, { feedback, kind, origin: origin!, returnTo }).catch(err => console.error('[mock job]', err))
+}
+
+export async function runMock(
+  ideaId: string,
+  opts: { feedback?: string; kind?: MockKind; origin?: IdeaStatus; returnTo?: IdeaStatus } = {},
+) {
   const db = getDb()
-  const idea = db.prepare('SELECT id, title, tagline FROM ideas WHERE id = ?').get(ideaId) as { id: string; title: string; tagline: string | null } | undefined
+  const kind: MockKind = opts.kind ?? 'app'
+  const store = MOCK_STORE[kind]
+  const idea = db.prepare('SELECT id, title, tagline, business_model FROM ideas WHERE id = ?')
+    .get(ideaId) as { id: string; title: string; tagline: string | null; business_model: string | null } | undefined
   if (!idea) throw new Error(`Idea ${ideaId} not found`)
 
   try {
     const spec = getArtifact(ideaId, 'spec', 'json')
     if (!spec?.content) throw new Error('No spec to build a mock from')
-    const previous = feedback ? getArtifact(ideaId, 'mock', 'html') : undefined
+    const previous = opts.feedback ? getArtifact(ideaId, 'mock', store.kind) : undefined
 
     const content = [
-      `PRODUCT: ${idea.title} — ${idea.tagline ?? ''}`, '',
+      `PRODUCT: ${idea.title} — ${idea.tagline ?? ''}`,
+      ...(kind === 'landing' && idea.business_model ? [`BUSINESS MODEL: ${idea.business_model}`] : []),
+      '',
       'SPEC:', spec.content,
-      ...(previous?.content ? ['', 'PREVIOUS MOCK (HTML):', previous.content] : []),
+      ...(previous?.content ? ['', `PREVIOUS ${kind === 'landing' ? 'LANDING PAGE' : 'MOCK'} (HTML):`, previous.content] : []),
     ].join('\n')
 
     // Tailwind-heavy markup is token-dense (~70 tokens/line), so a 300-line
@@ -467,7 +483,7 @@ export async function runMock(ideaId: string, feedback?: string) {
     const msg = await getClient().messages.create({
       model: MODEL,
       max_tokens: 20000,
-      system: composeMockPrompt(feedback),
+      system: kind === 'landing' ? composeLandingPrompt(opts.feedback) : composeMockPrompt(opts.feedback),
       messages: [{ role: 'user', content }],
     })
     if (msg.stop_reason === 'max_tokens') throw new Error('Mock generation hit the output token limit; tighten the spec or simplify the screens')
@@ -475,116 +491,17 @@ export async function runMock(ideaId: string, feedback?: string) {
 
     // Reserve the version first so the file name matches the artifact row.
     const { next } = db.prepare(
-      `SELECT COALESCE(MAX(version), 0) + 1 AS next FROM artifacts WHERE idea_id = ? AND stage = 'mock' AND kind = 'html'`
-    ).get(ideaId) as { next: number }
-    const file = writeMockFile(slugify(idea.title), next, html)
-    addArtifact({ ideaId, stage: 'mock', kind: 'html', content: html, path: file })
+      `SELECT COALESCE(MAX(version), 0) + 1 AS next FROM artifacts WHERE idea_id = ? AND stage = 'mock' AND kind = ?`
+    ).get(ideaId, store.kind) as { next: number }
+    const file = writeMockFile(idea.title, next, html, store.prefix)
+    addArtifact({ ideaId, stage: 'mock', kind: store.kind, content: html, path: file })
 
     logUsage('mock', ideaId, msg.usage.input_tokens, msg.usage.output_tokens)
-    return transition(ideaId, 'mock_ready', { actor: 'auto' })
+    return transition(ideaId, opts.returnTo ?? 'mock_ready', { actor: 'auto', reason: kind === 'landing' ? 'landing page ready' : undefined })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[runMock ${ideaId}]`, message)
-    transition(ideaId, 'spec_ready', { actor: 'auto', reason: message })
+    transition(ideaId, opts.origin ?? 'spec_ready', { actor: 'auto', error: message })
     return null
   }
-}
-
-// ── Stage 6: Prototype ────────────────────────────────────────────────────────
-
-// Gate + kickoff, same shape as startAnalyze: synchronous transition (409 on
-// an illegal move), then the long model call runs detached.
-export function startPrototype(ideaId: string, actor: 'human' | 'auto' = 'human') {
-  transition(ideaId, 'prototyping', { actor })
-  void runPrototype(ideaId).catch(err => console.error('[prototype job]', err))
-}
-
-// Assumes the idea is already `prototyping` (see startPrototype). Owns its own
-// completion/failure transitions and never throws into the caller.
-export async function runPrototype(ideaId: string) {
-  const db = getDb()
-  const idea = db.prepare(`
-    SELECT i.*, a.recommendation, a.feasibility_score, a.technical_feasibility,
-           a.revenue_model, a.risks
-    FROM ideas i
-    LEFT JOIN analyses a ON a.idea_id = i.id
-    WHERE i.id = ?
-  `).get(ideaId) as Record<string, unknown>
-
-  if (!idea) throw new Error(`Idea ${ideaId} not found`)
-
-  try {
-    const userContent = [
-      `Title: ${idea.title}`,
-      `Tagline: ${idea.tagline}`,
-      `Problem: ${idea.problem}`,
-      `Solution: ${idea.solution}`,
-      `Market: ${idea.market_sector} / ${idea.market_audience}`,
-      `Business model: ${idea.business_model}`,
-      `Moat: ${idea.moat_type}`,
-      idea.technical_feasibility ? `Technical feasibility notes: ${idea.technical_feasibility}` : '',
-      idea.revenue_model ? `Revenue model: ${idea.revenue_model}` : '',
-      idea.risks ? `Key risks to address: ${idea.risks}` : '',
-    ].filter(Boolean).join('\n')
-
-    const msg = await getClient().messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      system: PROTOTYPE_SYSTEM,
-      messages: [{ role: 'user', content: userContent }],
-    })
-
-    const text = msg.content[0].type === 'text' ? msg.content[0].text : ''
-    const proto = extractJSON(text) as { files: Array<{ path: string; content: string; language: string }>; stack?: string[]; readme?: string }
-    const tokens = msg.usage.input_tokens + msg.usage.output_tokens
-
-    const date = new Date().toISOString().slice(0, 10)
-    const dirPath = writeSandbox(`${date}-${slugify(idea.title as string)}`, proto.files)
-
-    const completedAt = new Date().toISOString()
-
-    db.prepare(`
-      INSERT INTO prototypes
-        (id, idea_id, directory_path, file_count, file_tree, stack, readme, tokens_used, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      crypto.randomUUID(), ideaId, dirPath,
-      proto.files.length,
-      JSON.stringify(proto.files),
-      JSON.stringify(proto.stack ?? []),
-      proto.readme ?? null,
-      tokens, completedAt
-    )
-
-    logUsage('prototype', ideaId, msg.usage.input_tokens, msg.usage.output_tokens)
-    return transition(ideaId, 'prototyped', { actor: 'auto' })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error(`[runPrototype ${ideaId}]`, message)
-    // Back to the queue with the error attached (ideas.prototype_error + decisions).
-    transition(ideaId, 'selected_prototype', { actor: 'auto', reason: message })
-    return null
-  }
-}
-
-// ── Nightly prototype run (called by scheduler) ───────────────────────────────
-
-// Each idea is isolated: a failed transition or build logs and moves on rather
-// than aborting the rest of the queue.
-export async function runNightlyPrototypes() {
-  const db = getDb()
-  const selected = db.prepare(`SELECT id FROM ideas WHERE status = 'selected_prototype'`).all() as { id: string }[]
-  console.log(`[pipeline] Nightly prototype run: ${selected.length} ideas queued`)
-  let ok = 0, failed = 0
-  for (const { id } of selected) {
-    try {
-      transition(id, 'prototyping', { actor: 'auto', reason: 'nightly run' })
-      const result = await runPrototype(id)
-      if (result) ok++; else failed++
-    } catch (err) {
-      failed++
-      console.error(`[pipeline] nightly prototype ${id} skipped:`, err instanceof Error ? err.message : err)
-    }
-  }
-  console.log(`[pipeline] Nightly prototype run done: ${ok} built, ${failed} failed`)
 }

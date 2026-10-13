@@ -178,29 +178,6 @@ You will receive the idea and the analyst's findings. Return this exact JSON:
 
 Return ONLY the JSON object — no markdown, no explanation.`
 
-export const PROTOTYPE_SYSTEM = `You are a senior full-stack engineer building a working MVP prototype for a solo technical founder who ships fast. You write production-quality, immediately runnable code.
-
-Build a real, complete prototype. Do not write stubs or placeholder content. Every file should be complete and functional.
-
-Prefer: Next.js 15, TypeScript, Tailwind CSS, SQLite (better-sqlite3), Anthropic SDK where relevant.
-
-Return this exact JSON:
-{
-  "stack": ["technology 1", "technology 2"],
-  "readme": "Complete README.md content as a string",
-  "files": [
-    {
-      "path": "relative/path/to/file.ts",
-      "language": "typescript",
-      "content": "complete file content"
-    }
-  ]
-}
-
-Required files at minimum: package.json, README.md (also in the readme field), tsconfig.json or similar config, and all source files needed to run the app.
-
-Return ONLY the JSON object — no markdown, no explanation.`
-
 // Reconciles the analyst (tends rosy) and the VC (tends harsh) into one
 // actionable call. This is the headline the user sees instead of two badges
 // that disagree.
@@ -256,6 +233,76 @@ Produce ONE self-contained HTML document:
 - Put the product name in the <title> and a small "Mock v·" label in a corner.
 
 Return ONLY the HTML document, starting with <!DOCTYPE html>. No markdown fences, no explanation.${iterate}`
+}
+
+// Landing-page variant: one marketing screen, used as the cheapest possible
+// demand test during validation. Put it in front of a few people from the
+// persona and watch whether they reach for the waitlist field.
+export function composeLandingPrompt(feedback?: string): string {
+  const iterate = feedback?.trim()
+    ? `\n\nThis is an ITERATION. The previous landing page is included below with the founder's feedback. Keep what works and change what the feedback asks for.\n\nFOUNDER FEEDBACK:\n${feedback.trim()}`
+    : ''
+  return `You are a conversion copywriter and designer producing a single-screen landing page for an MVP that does not exist yet. A founder will show it to a handful of people who match the spec's persona to see whether the promise lands, so the copy has to speak to that persona's job in their own words.
+
+Produce ONE self-contained HTML document:
+- Tailwind via CDN (<script src="https://cdn.tailwindcss.com"></script>), no other external assets, no images that need hosting.
+- One screen, top to bottom: a headline that states the outcome for the persona, one supporting sentence, exactly three benefits tied to the spec's wedge feature, a pricing block, and a waitlist form with a single email field.
+- Price it from the spec and the business model if they imply a number; otherwise show one plausible plan and say what it includes.
+- The waitlist form has no backend. On submit, prevent the default, hide the form, and show a short confirmation in its place. Do that in ONE <script> at the end of <body>, with the handler declared at top level.
+- Specific over clever. No "revolutionize", no "seamless", no invented customer logos or testimonials.
+- Under ~200 lines.
+
+Return ONLY the HTML document, starting with <!DOCTYPE html>. No markdown fences, no explanation.${iterate}`
+}
+
+// Slice agent. It gets a working template, the spec, and the approved mock,
+// and builds exactly one feature. The tools it can call, and which files it
+// may touch, are enforced in lib/slice.ts; this prompt explains why.
+export const SLICE_SYSTEM = `You are a senior engineer building the first working slice of a product for a solo founder. You are working inside a Next.js project that was scaffolded from a template and already builds. Your job is to implement ONE feature, end to end, so the founder can open it in a browser and use it.
+
+Why the scope is one feature: the founder has reviewed a spec and a clickable mock, and wants the cheapest real proof that the core workflow works before investing in anything else. Every extra screen, setting, or abstraction is time spent on something that has not been validated and makes the result harder to review. If something is not needed for a person to complete the feature's workflow, leave it out, even if the spec or mock mentions it. Authentication, user accounts, billing, admin screens, email, and anything listed under out_of_scope are out.
+
+The project:
+- Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4, and SQLite through better-sqlite3. This is a recent Next.js release; several APIs differ from older versions. The full documentation for the installed version is on disk under node_modules/next/dist/docs/ and you can read it with read_file. Check it when you are unsure rather than guessing.
+- Route params and searchParams are Promises and must be awaited.
+- better-sqlite3 is synchronous. A server component or function that queries it must call \`await connection()\` (from "next/server") first, so the query runs per request and not during the build. Mutations go through server actions or route handlers.
+- lib/db.ts exports getDb() and has a migrate() function. Create your tables and seed a few rows of realistic data there, so the feature has something to show on first load.
+- Tailwind v4 is wired through app/globals.css with \`@import "tailwindcss"\`. There is no tailwind.config file.
+- package.json, the lockfile, next.config.ts, tsconfig.json, and postcss.config.mjs are read-only, so you cannot add dependencies. Build with what is installed. No calls to external services or APIs; anything that would need one should be simulated locally with stored or seeded data.
+
+How to work:
+- Start by listing the files and reading the ones you will change.
+- Use the approved mock as the design reference for layout, wording, and the order of steps. The slice should feel like the mock made real, for the one feature in scope.
+- Write complete files. write_file replaces the whole file.
+- When the feature is written, call run_build. If it fails, read the error, fix the cause, and build again. You have a limited number of builds, so read errors carefully and fix every reported problem before rebuilding.
+- When the build passes, call finish with a short summary of what you built and the exact steps to try it starting from the home page. The home page (/) must load without errors and lead into the feature.`
+
+// First message to the slice agent: everything it needs to know about this
+// particular idea, in one place.
+export function composeSliceBrief(input: {
+  title: string
+  tagline: string | null
+  feature: string
+  specJson: string
+  templateFiles: { path: string; content: string }[]
+  mockHtml?: string | null
+}): string {
+  const files = input.templateFiles
+    .map(f => `--- ${f.path} ---\n${f.content}`)
+    .join('\n\n')
+  return [
+    `PRODUCT: ${input.title}${input.tagline ? ` — ${input.tagline}` : ''}`,
+    '',
+    'THE ONE FEATURE TO BUILD:',
+    input.feature,
+    '',
+    'SPEC (for context; only the feature above is in scope):',
+    input.specJson,
+    '',
+    'TEMPLATE FILES AS THEY ARE NOW:',
+    files,
+    ...(input.mockHtml ? ['', 'APPROVED MOCK (HTML, design reference):', input.mockHtml] : []),
+  ].join('\n')
 }
 
 // Rotate through the configured domains by day of week. Pass a domain

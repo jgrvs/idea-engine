@@ -1,25 +1,52 @@
 'use client'
 
 import { useState } from 'react'
-import type { MockVersion } from '@/lib/types'
+import type { MockKind, MockVersion } from '@/lib/types'
+
+const KIND_LABEL: Record<MockKind, string> = { app: 'App mock', landing: 'Landing page' }
 
 // Renders a mock version in a sandboxed iframe served by GET /api/ideas/:id/mock.
 // `allow-scripts` without `allow-same-origin` lets the mock's own JS run while
 // keeping it cut off from the dashboard's origin, cookies, and storage.
-export default function MockView({ ideaId, versions }: { ideaId: string; versions: MockVersion[] }) {
-  const latest = versions[0]?.version ?? 1
-  const [version, setVersion] = useState(latest)
-  const src = `/api/ideas/${ideaId}/mock?v=${version}`
-  const current = versions.find(v => v.version === version)
+export default function MockView({ ideaId, versions, landingVersions }: {
+  ideaId: string
+  versions: MockVersion[]
+  landingVersions: MockVersion[]
+}) {
+  const kinds = (['app', 'landing'] as const).filter(k => (k === 'app' ? versions : landingVersions).length > 0)
+  const [kind, setKind] = useState<MockKind>(kinds[0] ?? 'app')
+  // null means "follow the latest", so a freshly generated version shows up
+  // without the user having to pick it.
+  const [picked, setPicked] = useState<Record<MockKind, number | null>>({ app: null, landing: null })
+
+  const list = kind === 'app' ? versions : landingVersions
+  const version = picked[kind] ?? list[0]?.version ?? 1
+  const src = `/api/ideas/${ideaId}/mock?kind=${kind}&v=${version}`
+  const current = list.find(v => v.version === version)
 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
+        {kinds.length > 1 && (
+          <div className="flex gap-0.5 mr-2">
+            {kinds.map(k => (
+              <button
+                key={k}
+                onClick={() => setKind(k)}
+                className={`text-xs font-mono px-2 py-1 rounded transition-colors ${
+                  k === kind ? 'chip-on' : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                {KIND_LABEL[k]}
+              </button>
+            ))}
+          </div>
+        )}
         <span className="text-xs font-mono text-zinc-500">Version</span>
-        {versions.map(v => (
+        {list.map(v => (
           <button
             key={v.version}
-            onClick={() => setVersion(v.version)}
+            onClick={() => setPicked(p => ({ ...p, [kind]: v.version }))}
             className={`text-xs font-mono px-2 py-0.5 rounded border transition-colors ${
               v.version === version ? 'chip-on' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
             }`}
@@ -41,7 +68,7 @@ export default function MockView({ ideaId, versions }: { ideaId: string; version
         key={src}
         src={src}
         sandbox="allow-scripts"
-        title={`Mock v${version}`}
+        title={`${KIND_LABEL[kind]} v${version}`}
         className="w-full rounded border border-zinc-800 bg-white"
         style={{ height: '640px' }}
       />

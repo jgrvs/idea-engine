@@ -1,15 +1,18 @@
 # Idea Engine
 
-A self-hosted, Claude-powered pipeline that generates, scores, analyzes, and prototypes
-entrepreneurial ideas on a daily schedule. Runs as a single long-lived local process —
-portable across Windows and Linux (macOS works too).
+A self-hosted, Claude-powered pipeline that takes entrepreneurial ideas from generation
+to a small piece of working software, one gated stage at a time. Runs as a single
+long-lived local process — portable across Windows and Linux (macOS works too).
 
 **What and why:** Brainstorming with an LLM is easy; getting a *useful, non-repetitive,
 ranked* stream of ideas out of one is not. Left alone, a model keeps proposing variations
 of the same few concepts, and a flat "rate this 1-10" prompt gives scores you can't tune.
-Idea Engine wraps Claude in a small pipeline that filters near-duplicates by meaning,
-scores each idea on several sub-dimensions you can re-weight after the fact, and then
-builds a working prototype of the winners overnight.
+Idea Engine wraps Claude in a small pipeline that filters near-duplicates by meaning and
+scores each idea on several sub-dimensions you can re-weight after the fact. From there
+an idea only moves forward through gates, and each stage produces something small and
+reviewable before the next, more expensive one is paid for: a one-page spec, then a
+clickable mock, then evidence against its assumptions, and only then real code for a
+single feature.
 
 <!-- TODO: add dashboard screenshot or GIF here, e.g. ![Dashboard](docs/dashboard.png) -->
 
@@ -17,8 +20,9 @@ builds a working prototype of the winners overnight.
 
 - Next.js (App Router) + TypeScript + Tailwind
 - SQLite via `better-sqlite3` (`data/ideas.db`)
-- `node-cron` for the 3 AM generate / 11 PM prototype jobs (in-process — OS-agnostic)
-- Anthropic SDK (`claude-sonnet-4-6`)
+- `node-cron` for the 3 AM generate / 11 PM slice-build jobs (in-process — OS-agnostic)
+- Anthropic SDK: `claude-sonnet-4-6` for generation, analysis, spec, and mock; `claude-opus-5-5`
+  for the slice agent (both set in `lib/llm.ts`)
 - `@huggingface/transformers` running `all-MiniLM-L6-v2` locally for embeddings
 
 ## Design decisions
@@ -40,12 +44,41 @@ builds a working prototype of the winners overnight.
 - **SQLite for storage.** Single user, single process, small data: a file database
   avoids running a server, makes backup a file copy, and keeps the project self-hosted.
   Embeddings live next to the rows they describe.
+- **An explicit state machine with a decision log.** Every status change goes through
+  one `transition()` function backed by a table of allowed moves (`lib/stages.ts`). A gate
+  is enforced by the move simply not existing: nothing can reach a build except from the
+  validation stage. Each move records who made it and why, and a kill always needs a
+  reason.
+- **Small artifacts before big ones.** Each stage costs several times the one before it,
+  so each one has to earn the next. A spec is a few cents, a mock under a dime, and a
+  slice a dollar or two; most ideas should die before the expensive end.
+- **One feature, from a pinned template, behind a real build.** The slice stage does not
+  ask a model for a whole app. It scaffolds a known-good project, lets an agent implement
+  only the spec's first feature with a handful of file tools, and then runs the build and
+  a smoke test itself. A red build is a failed slice, with the log attached.
 
 ## Pipeline
 
-`Generate (3 AM)` → `Triage` → `Analyze` → `Select` → `Prototype (11 PM)`
+| Stage | Produces | Gate |
+|---|---|---|
+| Generate (3 AM) | Ideas with five sub-scores | Automatic: low viability is parked under Screened |
+| Triage | Keep or kill | You. A kill needs a reason |
+| Analyze | Analyst report, VC critique, one reconciled verdict | You |
+| Spec | One page: persona, wedge feature, three-item scope, success and kill criteria, assumptions | You approve, edit, or redraft |
+| Mock | A clickable single-file HTML mock of the wedge workflow | You advance, iterate with feedback, or kill |
+| Validate | One experiment per assumption, plus an optional landing page for demand testing | At least one assumption confirmed, or an override with a written reason |
+| Slice (on demand, or 11 PM) | The spec's first feature as running code | Automatic: build passes and the home page responds. Then you run it and mark it works or broken |
 
-Prototypes are written as real source trees to the directory in `SANDBOX_PATH`.
+Mocks and slices are written under the directory in `SANDBOX_PATH`, one folder per idea.
+
+### What the slice stage runs on your machine
+
+Building a slice installs the template's pinned dependencies, then builds and briefly
+starts code that a model wrote. That code runs as you, with your filesystem access. The
+engine limits what it can: the agent cannot change dependencies or build config or write
+outside the slice folder, the build and server get a stripped environment with no API
+key in it, and the smoke-test server listens on 127.0.0.1 only. It is still not a
+sandbox. Review a slice before running it anywhere that matters.
 
 ## Setup (any OS)
 
@@ -108,12 +141,13 @@ The cron jobs only fire while the host is awake. On an always-on home server thi
 a non-issue. On a laptop that sleeps overnight, either keep it awake (power settings)
 or trigger the jobs from the OS scheduler with wake-from-sleep:
 
-- **Windows:** Task Scheduler task hitting `POST /api/generate` (and a prototype endpoint),
+- **Windows:** Task Scheduler task hitting `POST /api/generate` (and `POST /api/ideas/<id>/slice`),
   with "Wake the computer to run this task" enabled.
 - **Linux:** a systemd timer with `WakeSystem=true`, or a cron job (server stays awake anyway).
 
 ## Data & backups
 
-- `data/ideas.db` — all ideas, analyses, prototypes, usage log, and config. Back this up.
-- Generated prototype source lives under `SANDBOX_PATH`.
+- `data/ideas.db` — all ideas, analyses, specs, mocks, experiments, decisions, usage log, and
+  config. Back this up.
+- Mock HTML files and slice projects live under `SANDBOX_PATH`.
 - Both are git-ignored.

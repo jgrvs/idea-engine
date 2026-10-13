@@ -10,7 +10,9 @@ const FILTERS: { label: string; value: IdeaStatus | 'all' }[] = [
   { label: 'Analyzed', value: 'analyzed' },
   { label: 'Spec', value: 'spec_ready' },
   { label: 'Mock', value: 'mock_ready' },
-  { label: 'Built', value: 'prototyped' },
+  { label: 'Validate', value: 'validating' },
+  { label: 'Slice', value: 'slice_built' },
+  { label: 'Verified', value: 'slice_verified' },
   { label: 'Screened', value: 'screened_out' },
   { label: 'Dismissed', value: 'dismissed' },
 ]

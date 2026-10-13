@@ -26,6 +26,7 @@ const STAGE_COLOR: Record<string, string> = {
   analyze: 'bg-amber-500',
   spec: 'bg-cyan-500',
   mock: 'bg-teal-400',
+  slice: 'bg-purple-500',
   prototype: 'bg-purple-500',
 }
 
@@ -44,7 +45,7 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 font-mono text-sm">close</button>
         </div>
         <p className="text-xs font-mono text-zinc-600 mb-5">
-          {usage?.month} · estimated from logged tokens at Sonnet 4.6 pricing ($3/$15 per 1M)
+          {usage?.month} · estimated from logged tokens at each model&apos;s list price
         </p>
 
         {!usage ? (

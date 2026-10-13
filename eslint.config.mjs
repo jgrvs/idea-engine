@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Starting point for generated slices; it is its own project, not part of this one.
+    "templates/**",
   ]),
 ]);
 

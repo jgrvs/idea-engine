@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* The slice template is its own project with its own stylesheet. */
+@source not "../templates";
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Neon design system
 

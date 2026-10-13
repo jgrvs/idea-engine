@@ -8,12 +8,60 @@ export type IdeaStatus =
   | 'spec_ready'          // spec awaiting human approval / edits
   | 'mocking'             // generating the clickable HTML mock
   | 'mock_ready'          // mock awaiting advance / iterate / kill
-  | 'selected_prototype'
-  | 'prototyping'
-  | 'prototyped'
+  | 'validating'          // experiments being run against the spec's assumptions
+  | 'selected_slice'      // validated; queued for a build
+  | 'slicing'             // agent building ONE feature from the template
+  | 'slice_built'         // build green + smoke test passed; awaiting human check
+  | 'slice_failed'        // build or smoke test failed, or a human marked it broken
+  | 'slice_verified'      // a human ran it and confirmed it works
   | 'dismissed'
 
-export const PROCESSING_STATUSES: readonly IdeaStatus[] = ['analyzing', 'specing', 'mocking', 'prototyping']
+export const PROCESSING_STATUSES: readonly IdeaStatus[] = ['analyzing', 'specing', 'mocking', 'slicing']
+
+// Mocks come in two kinds: the clickable app workflow, and a one-screen
+// marketing page used as a cheap demand test during validation.
+export type MockKind = 'app' | 'landing'
+
+export const EXPERIMENT_METHODS = ['landing', 'interview', 'survey', 'teardown', 'waitlist', 'other'] as const
+export type ExperimentMethod = typeof EXPERIMENT_METHODS[number]
+export const EXPERIMENT_STATUSES = ['planned', 'running', 'confirmed', 'refuted', 'inconclusive'] as const
+export type ExperimentStatus = typeof EXPERIMENT_STATUSES[number]
+
+// One test of one assumption. Seeded from the spec, filled in by a human.
+export interface Experiment {
+  id: string
+  idea_id: string
+  assumption: string
+  method: ExperimentMethod | null
+  status: ExperimentStatus
+  result: string | null
+  evidence_url: string | null
+  created_at: string
+  updated_at: string
+}
+
+// What a slice run produced. Stored as the slice/json artifact.
+export interface SliceSummary {
+  version: number
+  feature: string
+  directory: string
+  run_command: string
+  model: string
+  turns: number
+  agent_finished: boolean
+  agent_summary: string | null
+  how_to_try: string | null
+  build_ok: boolean
+  build_exit_code: number | null
+  build_log_tail: string
+  smoke_status: number | null
+  smoke_ok: boolean
+  files_written: string[]
+  files_added: number
+  scope_flag: string | null
+  error: string | null
+  created_at: string
+}
 
 export type Recommendation = 'go' | 'explore' | 'no-go'
 
@@ -128,12 +176,6 @@ export interface Competitor {
   weakness: string
 }
 
-export interface PrototypeFile {
-  path: string
-  content: string
-  language: string
-}
-
 export interface Idea {
   id: string
   batch_id: string | null
@@ -167,14 +209,16 @@ export interface Idea {
   dismiss_reason: string | null
   analysis_stage: string | null
   analysis_error: string | null
-  prototype_error: string | null
-  stage_error: string | null          // spec / mock failures
+  stage_error: string | null          // last spec / mock / slice failure, already labelled
+  stage_progress: string | null       // live status line while a long stage runs
   analysis?: Analysis
   vc_review?: VcReview
-  prototype?: Prototype
   decisions?: Decision[]
   spec?: Spec & { version: number }
   mock_versions?: MockVersion[]
+  landing_versions?: MockVersion[]
+  experiments?: Experiment[]
+  slice?: SliceSummary
 }
 
 export type FundVerdict = 'fund' | 'explore' | 'pass'
@@ -216,21 +260,9 @@ export interface Analysis {
   created_at: string
 }
 
-export interface Prototype {
-  id: string
-  idea_id: string
-  directory_path: string | null
-  file_count: number
-  file_tree: PrototypeFile[] | null
-  stack: string[] | null
-  readme: string | null
-  tokens_used: number
-  created_at: string
-}
-
 export interface Batch {
   id: string
-  type: 'generate' | 'analyze' | 'prototype'
+  type: 'generate'
   status: 'running' | 'completed' | 'failed'
   domain: string | null
   ideas_count: number

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { PROCESSING_STATUSES, type Idea, type IdeaStatus, type KillReason, type Spec } from '@/lib/types'
+import { PROCESSING_STATUSES, type Idea, type IdeaStatus, type KillReason, type MockKind, type Spec } from '@/lib/types'
 import Sidebar from '@/components/Sidebar'
 import IdeaDetail from '@/components/IdeaDetail'
 import SettingsPanel from '@/components/SettingsPanel'
@@ -122,8 +122,8 @@ export default function Home() {
   // Background stage jobs share one shape: optimistic status, POST, then let
   // polling pick up the completed/failed state. The route answers 409 if the
   // idea isn't at the right gate, which surfaces in the log.
-  const startStage = async (id: string, stage: 'spec' | 'mock' | 'prototype', optimistic: IdeaStatus, body?: unknown) => {
-    setIdeas(prev => prev.map(i => i.id === id ? { ...i, status: optimistic, stage_error: null, prototype_error: null } : i))
+  const startStage = async (id: string, stage: 'spec' | 'mock' | 'slice', optimistic: IdeaStatus, body?: unknown) => {
+    setIdeas(prev => prev.map(i => i.id === id ? { ...i, status: optimistic, stage_error: null, stage_progress: null } : i))
     addLog('info', `${stage[0].toUpperCase() + stage.slice(1)} started for ${id.slice(0, 8)}…`)
     try {
       const res = await fetch(`/api/ideas/${id}/${stage}`, {
@@ -140,8 +140,11 @@ export default function Home() {
   }
 
   const handleSpec = (id: string) => startStage(id, 'spec', 'specing')
-  const handleMock = (id: string, feedback?: string) => startStage(id, 'mock', 'mocking', feedback ? { feedback } : undefined)
-  const handlePrototype = (id: string) => startStage(id, 'prototype', 'prototyping')
+  const handleMock = (id: string, opts?: { feedback?: string; kind?: MockKind }) => startStage(id, 'mock', 'mocking', opts)
+  const handleSlice = (id: string) => startStage(id, 'slice', 'slicing')
+
+  // Swap in a fresher copy of one idea (experiment edits return the whole idea).
+  const replaceIdea = (idea: Idea) => setIdeas(prev => prev.map(i => i.id === idea.id ? idea : i))
 
   const handleSaveSpec = async (id: string, spec: Spec): Promise<boolean> => {
     const res = await fetch(`/api/ideas/${id}/spec`, {
@@ -292,12 +295,6 @@ export default function Home() {
                 Send to Analysis
               </button>
               <button
-                onClick={() => bulkApply('selected_prototype')}
-                className="text-xs font-mono px-3 py-1.5 neon text-purple-400"
-              >
-                Queue Prototype
-              </button>
-              <button
                 onClick={() => setBulkDismissOpen(true)}
                 className="text-xs font-mono px-3 py-1.5 neon text-red-400"
               >
@@ -370,12 +367,14 @@ export default function Home() {
         <main className="flex-1 overflow-y-auto bg-grid">
           {selectedIdea ? (
             <IdeaDetail
+              key={selectedIdea.id}
               idea={selectedIdea}
               onAnalyze={() => handleAnalyze(selectedIdea.id)}
               onSpec={() => handleSpec(selectedIdea.id)}
-              onMock={feedback => handleMock(selectedIdea.id, feedback)}
+              onMock={opts => handleMock(selectedIdea.id, opts)}
               onSaveSpec={spec => handleSaveSpec(selectedIdea.id, spec)}
-              onPrototype={() => handlePrototype(selectedIdea.id)}
+              onSlice={() => handleSlice(selectedIdea.id)}
+              onIdeaChange={replaceIdea}
               onStatusUpdate={(status, reason, note) => handleStatusUpdate(selectedIdea.id, status, reason, note)}
             />
           ) : (

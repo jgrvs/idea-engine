@@ -3,37 +3,44 @@ import type { IdeaStatus, Recommendation, Verdict } from '@/lib/types'
 // Badges are hairline-outlined tags: the `badge` utility draws the outline and
 // wash from the text colour, so each entry here only has to pick a hue.
 // Hue tracks the funnel: neutral → blue (analysis) → cyan (spec) → teal (mock)
-// → violet (prototype) → green (built). Amber always means "working".
+// → orange (validate) → violet (slice) → green (verified). Amber always means
+// "working", red means a gate failed.
 const STATUS_STYLES: Record<IdeaStatus, string> = {
-  generated:           'text-zinc-400',
-  screened_out:        'text-zinc-600',
-  selected_analysis:   'text-blue-400',
-  analyzing:           'text-amber-400',
-  analyzed:            'text-blue-200',
-  specing:             'text-amber-400',
-  spec_ready:          'text-cyan-300',
-  mocking:             'text-amber-400',
-  mock_ready:          'text-teal-300',
-  selected_prototype:  'text-purple-400',
-  prototyping:         'text-amber-400',
-  prototyped:          'text-green-400',
-  dismissed:           'text-zinc-600',
+  generated:         'text-zinc-400',
+  screened_out:      'text-zinc-600',
+  selected_analysis: 'text-blue-400',
+  analyzing:         'text-amber-400',
+  analyzed:          'text-blue-200',
+  specing:           'text-amber-400',
+  spec_ready:        'text-cyan-300',
+  mocking:           'text-amber-400',
+  mock_ready:        'text-teal-300',
+  validating:        'text-orange-400',
+  selected_slice:    'text-purple-400',
+  slicing:           'text-amber-400',
+  slice_built:       'text-purple-300',
+  slice_failed:      'text-red-400',
+  slice_verified:    'text-green-400',
+  dismissed:         'text-zinc-600',
 }
 
 const STATUS_LABEL: Record<IdeaStatus, string> = {
-  generated:           'New',
-  screened_out:        'Screened',
-  selected_analysis:   'Queued',
-  analyzing:           'Analyzing…',
-  analyzed:            'Analyzed',
-  specing:             'Drafting spec…',
-  spec_ready:          'Spec review',
-  mocking:             'Mocking…',
-  mock_ready:          'Mock review',
-  selected_prototype:  'Queued',
-  prototyping:         'Building…',
-  prototyped:          'Prototyped',
-  dismissed:           'Dismissed',
+  generated:         'New',
+  screened_out:      'Screened',
+  selected_analysis: 'Queued',
+  analyzing:         'Analyzing…',
+  analyzed:          'Analyzed',
+  specing:           'Drafting spec…',
+  spec_ready:        'Spec review',
+  mocking:           'Mocking…',
+  mock_ready:        'Mock review',
+  validating:        'Validating',
+  selected_slice:    'Slice queued',
+  slicing:           'Building slice…',
+  slice_built:       'Slice review',
+  slice_failed:      'Slice failed',
+  slice_verified:    'Verified',
+  dismissed:         'Dismissed',
 }
 
 const REC_STYLES: Record<Recommendation, string> = {
