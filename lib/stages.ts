@@ -65,14 +65,16 @@ export function restoreTarget(ideaId: string): IdeaStatus {
   return row.has_proto > 0 ? 'prototyped' : row.has_analysis > 0 ? 'analyzed' : 'generated'
 }
 
-function validateKill(ideaId: string, opts: TransitionOpts) {
+// `from` is the idea's real current status so the error maps to 409, not 404
+// (TransitionError treats from === null as "idea not found").
+function validateKill(ideaId: string, from: IdeaStatus, opts: TransitionOpts) {
   const reason = opts.reason as KillReason | undefined
   if (!reason || !(KILL_REASONS as readonly string[]).includes(reason)) {
-    throw new TransitionError(ideaId, null, 'dismissed',
+    throw new TransitionError(ideaId, from, 'dismissed',
       `A kill reason is required (one of: ${KILL_REASONS.join(', ')})`)
   }
   if (reason === 'other' && !opts.note?.trim()) {
-    throw new TransitionError(ideaId, null, 'dismissed', "Kill reason 'other' needs a note")
+    throw new TransitionError(ideaId, from, 'dismissed', "Kill reason 'other' needs a note")
   }
 }
 
@@ -119,7 +121,7 @@ export function transition(ideaId: string, to: IdeaStatus, opts: TransitionOpts)
     if (!row) throw new TransitionError(ideaId, null, to)
     const from = row.status
     if (!canTransition(from, to)) throw new TransitionError(ideaId, from, to)
-    if (to === 'dismissed') validateKill(ideaId, opts)
+    if (to === 'dismissed') validateKill(ideaId, from, opts)
 
     const now = new Date().toISOString()
     const [extra, params] = sideColumns(from, to, opts, now)
