@@ -7,23 +7,35 @@ import { getDb, getIdeaWithRelations } from './db'
 import { KILL_REASONS, type Actor, type IdeaStatus, type KillReason } from './types'
 
 // Allowed moves. Keys are the current status, values are reachable statuses.
-// Gates are enforced by omission: e.g. nothing reaches `analyzing` except
-// `selected_analysis` (first run) or `analyzed` (re-run).
+// Gates are enforced by omission: e.g. nothing reaches `prototyping` except
+// from `selected_prototype`, and nothing reaches `selected_prototype` except
+// from a reviewed mock (`mock_ready`) or a rebuild of a prior prototype.
+//
+//   generated ─► selected_analysis ─► analyzing ─► analyzed ─► specing ─► spec_ready
+//      │                                                                     │ approve
+//      └─► screened_out (auto)                        mock_ready ◄─ mocking ◄┘
+//                                                        │ advance      ▲ iterate
+//                                   prototyped ◄─ prototyping ◄─ selected_prototype
 export const TRANSITIONS: Record<IdeaStatus, readonly IdeaStatus[]> = {
-  generated:          ['selected_analysis', 'dismissed'],
+  generated:          ['selected_analysis', 'screened_out', 'dismissed'],
+  screened_out:       ['generated', 'dismissed'],                         // promote back by hand
   selected_analysis:  ['analyzing', 'generated', 'dismissed'],
-  analyzing:          ['analyzed', 'selected_analysis'],            // success | failure revert
-  analyzed:           ['analyzing', 'selected_prototype', 'dismissed'],
-  selected_prototype: ['prototyping', 'analyzed', 'dismissed'],
-  prototyping:        ['prototyped', 'selected_prototype'],         // success | failure revert
-  prototyped:         ['selected_prototype', 'dismissed'],          // rebuild
-  dismissed:          ['generated', 'analyzed', 'prototyped'],      // restore (see restoreTarget)
+  analyzing:          ['analyzed', 'selected_analysis'],                  // success | failure revert
+  analyzed:           ['analyzing', 'specing', 'dismissed'],              // re-analyze | draft spec
+  specing:            ['spec_ready', 'analyzed'],                         // success | failure revert
+  spec_ready:         ['specing', 'mocking', 'analyzed', 'dismissed'],    // redraft | approve+mock | unqueue
+  mocking:            ['mock_ready', 'spec_ready'],                       // success | failure revert
+  mock_ready:         ['mocking', 'selected_prototype', 'spec_ready', 'dismissed'], // iterate | advance | back
+  selected_prototype: ['prototyping', 'mock_ready', 'dismissed'],
+  prototyping:        ['prototyped', 'selected_prototype'],               // success | failure revert
+  prototyped:         ['selected_prototype', 'dismissed'],                // rebuild
+  dismissed:          ['generated', 'analyzed', 'spec_ready', 'mock_ready', 'prototyped'], // restore
 }
 
-// Statuses a human may request directly via the API. Processing/terminal
-// states are only ever set by the pipeline itself.
+// Statuses a human may request directly via the API. Processing states are
+// only ever set by the pipeline itself.
 export const HUMAN_SETTABLE: readonly IdeaStatus[] = [
-  'generated', 'selected_analysis', 'analyzed', 'selected_prototype', 'dismissed',
+  'generated', 'selected_analysis', 'analyzed', 'spec_ready', 'mock_ready', 'selected_prototype', 'dismissed',
 ]
 
 export type RequestedStatus = IdeaStatus | 'restore'
@@ -60,9 +72,15 @@ export function restoreTarget(ideaId: string): IdeaStatus {
   const row = getDb().prepare(`
     SELECT
       (SELECT COUNT(*) FROM prototypes WHERE idea_id = ?) AS has_proto,
+      (SELECT COUNT(*) FROM artifacts  WHERE idea_id = ? AND stage = 'mock') AS has_mock,
+      (SELECT COUNT(*) FROM artifacts  WHERE idea_id = ? AND stage = 'spec') AS has_spec,
       (SELECT COUNT(*) FROM analyses   WHERE idea_id = ?) AS has_analysis
-  `).get(ideaId, ideaId) as { has_proto: number; has_analysis: number }
-  return row.has_proto > 0 ? 'prototyped' : row.has_analysis > 0 ? 'analyzed' : 'generated'
+  `).get(ideaId, ideaId, ideaId, ideaId) as { has_proto: number; has_mock: number; has_spec: number; has_analysis: number }
+  if (row.has_proto > 0) return 'prototyped'
+  if (row.has_mock > 0) return 'mock_ready'
+  if (row.has_spec > 0) return 'spec_ready'
+  if (row.has_analysis > 0) return 'analyzed'
+  return 'generated'
 }
 
 // `from` is the idea's real current status so the error maps to 409, not 404
@@ -83,22 +101,35 @@ function validateKill(ideaId: string, from: IdeaStatus, opts: TransitionOpts) {
 function sideColumns(from: IdeaStatus, to: IdeaStatus, opts: TransitionOpts, now: string): [string, unknown[]] {
   const restoring = from === 'dismissed'
   const clearDismiss: [string, unknown[]] = ['dismissed_at=NULL, dismiss_reason=NULL', []]
+  const none: [string, unknown[]] = ['', []]
+  const failed = (col: string): [string, unknown[]] => [`${col}=?`, [opts.reason ?? 'stage failed']]
 
   switch (to) {
     case 'generated':
-      return restoring ? clearDismiss : ['', []]
+      return restoring ? clearDismiss : none
+    case 'screened_out':
+      return none
     case 'selected_analysis':
-      return from === 'analyzing'
-        ? ['analysis_stage=NULL, analysis_error=?', [opts.reason ?? 'analysis failed']]
-        : ['selected_for_analysis_at=?', [now]]
+      return from === 'analyzing' ? ['analysis_stage=NULL, analysis_error=?', [opts.reason ?? 'analysis failed']]
+                                  : ['selected_for_analysis_at=?', [now]]
     case 'analyzing':
       return ['analysis_stage=?, analysis_error=NULL, analysis_started_at=?', ['analyst', now]]
     case 'analyzed':
-      return restoring ? clearDismiss : ['analysis_stage=NULL, analysis_completed_at=?', [now]]
+      if (restoring) return clearDismiss
+      if (from === 'analyzing') return ['analysis_stage=NULL, analysis_completed_at=?', [now]]
+      if (from === 'specing') return failed('stage_error')
+      return none
+    case 'specing':
+    case 'mocking':
+      return ['stage_error=NULL', []]
+    case 'spec_ready':
+      if (restoring) return clearDismiss
+      if (from === 'mocking') return failed('stage_error')
+      return none
+    case 'mock_ready':
+      return restoring ? clearDismiss : none
     case 'selected_prototype':
-      return from === 'prototyping'
-        ? ['prototype_error=?', [opts.reason ?? 'prototype failed']]
-        : ['selected_for_prototype_at=?', [now]]
+      return from === 'prototyping' ? failed('prototype_error') : ['selected_for_prototype_at=?', [now]]
     case 'prototyping':
       return ['prototype_started_at=?, prototype_error=NULL', [now]]
     case 'prototyped':

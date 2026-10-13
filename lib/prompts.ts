@@ -16,6 +16,9 @@ export interface GenerateConfig {
   isCustom: boolean
   dedupEnabled: boolean
   dedupThreshold: number  // cosine similarity at/above which a candidate is a dupe
+  // Auto-screen gate: ideas scoring below this viability land in `screened_out`
+  // instead of the triage pile. 0 disables.
+  screenThreshold: number
 }
 
 // Sector-diverse starting set. Override in Settings → Generation.
@@ -42,6 +45,7 @@ export const DEFAULT_GENERATE_CONFIG: GenerateConfig = {
   isCustom: false,
   dedupEnabled: true,
   dedupThreshold: 0.82,
+  screenThreshold: 4.0,
 }
 
 const SCHEMA_BLOCK = `Return a JSON array of exactly the requested number of ideas. Each must follow this schema exactly:`
@@ -196,6 +200,63 @@ Return this exact JSON:
 Required files at minimum: package.json, README.md (also in the readme field), tsconfig.json or similar config, and all source files needed to run the app.
 
 Return ONLY the JSON object — no markdown, no explanation.`
+
+// Reconciles the analyst (tends rosy) and the VC (tends harsh) into one
+// actionable call. This is the headline the user sees instead of two badges
+// that disagree.
+export const VERDICT_SYSTEM = `You are the founder's chief of staff. You have an idea, a venture analyst's due-diligence writeup, and a skeptical VC's critique of that writeup. The two often disagree. Your job is to decide what the founder should actually do next.
+
+Return this exact JSON:
+{
+  "verdict": "<exactly one of: advance | validate-first | kill>",
+  "load_bearing_assumption": "The single assumption that, if false, kills this idea (1 sentence)",
+  "rationale": "2-3 sentences: why this verdict, reconciling where the analyst and VC disagreed"
+}
+
+Guidance:
+- advance: the disagreement is about upside, not viability; worth a cheap spec and mock now.
+- validate-first: a specific assumption must be tested before spending any build effort; name it.
+- kill: a fatal flaw both reviewers touched on, or a VC concern the analyst had no answer for.
+
+Return ONLY the JSON object — no markdown, no explanation.`
+
+// One-page spec: forces the "what is the ONE workflow" question before any
+// code or mock exists. Deliberately small so it is reviewable in a minute.
+export const SPEC_SYSTEM = `You are a product lead writing a one-page MVP spec for a solo technical founder. You have the idea, a due-diligence analysis, and a VC critique. Be concrete and ruthless about scope.
+
+Return this exact JSON:
+{
+  "persona": "ONE specific user: role, context, what their day looks like (2 sentences)",
+  "job_to_be_done": "The job they hire this product for, in their words (1 sentence)",
+  "wedge_feature": "The single workflow that delivers the core value end to end (2 sentences)",
+  "mvp_scope": ["Feature 1 (one line)", "Feature 2", "Feature 3"],
+  "out_of_scope": ["Tempting thing explicitly NOT in the MVP", "..."],
+  "success_metric": "One measurable signal from a pilot that says this works (with a number)",
+  "kill_criteria": "What result from the pilot means stop (with a number)",
+  "assumptions": ["Assumption that must hold, taken from the VC's needs-to-be-true list and sharpened", "..."]
+}
+
+Rules: mvp_scope has at most 3 items and the first is the wedge. out_of_scope has 3-5 items. assumptions has 2-4 items. Return ONLY the JSON object — no markdown, no explanation.`
+
+// Clickable mock: one self-contained HTML file, throwaway by design. Returns
+// raw HTML, not JSON, so a 300-line document isn't escaped inside a string.
+export function composeMockPrompt(feedback?: string): string {
+  const iterate = feedback?.trim()
+    ? `\n\nThis is an ITERATION. The previous mock is included below along with the founder's feedback. Keep what works, change what the feedback asks for, and do not reset the design.\n\nFOUNDER FEEDBACK:\n${feedback.trim()}`
+    : ''
+  return `You are a product designer producing a clickable mock of an MVP's core workflow from a one-page spec. The mock exists so a founder can look at the product before anyone writes real code.
+
+Produce ONE self-contained HTML document:
+- Tailwind via CDN (<script src="https://cdn.tailwindcss.com"></script>), no other external assets.
+- 1-3 screens that walk the wedge workflow end to end for the persona in the spec. Navigation between screens is plain JavaScript toggling visibility; no router, no framework.
+- Realistic hardcoded data that matches the persona's world. No lorem ipsum, no "Item 1".
+- No backend, no fetch, no forms that submit. Buttons that would call a server just advance the screen or show a toast.
+- All JavaScript goes in ONE <script> at the end of <body>. Every function referenced by an onclick must be declared there at top level (plain \`function name() {}\`), and every id used by the script must exist in the markup. Before finishing, check each onclick against the declared functions; an undefined handler is the one bug that makes the mock useless.
+- Keep it under ~300 lines. Favor one clear screen over five thin ones.
+- Put the product name in the <title> and a small "Mock v·" label in a corner.
+
+Return ONLY the HTML document, starting with <!DOCTYPE html>. No markdown fences, no explanation.${iterate}`
+}
 
 // Rotate through the configured domains by day of week. Pass a domain
 // explicitly to POST /api/generate to override for a single run.

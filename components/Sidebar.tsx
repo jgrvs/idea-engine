@@ -8,9 +8,15 @@ const FILTERS: { label: string; value: IdeaStatus | 'all' }[] = [
   { label: 'All', value: 'all' },
   { label: 'New', value: 'generated' },
   { label: 'Analyzed', value: 'analyzed' },
+  { label: 'Spec', value: 'spec_ready' },
+  { label: 'Mock', value: 'mock_ready' },
   { label: 'Built', value: 'prototyped' },
+  { label: 'Screened', value: 'screened_out' },
   { label: 'Dismissed', value: 'dismissed' },
 ]
+
+// Parked-out-of-the-way statuses: only shown under their own tab, never in All.
+const HIDDEN: readonly IdeaStatus[] = ['dismissed', 'screened_out']
 
 interface Props {
   ideas: Idea[]
@@ -33,13 +39,11 @@ export default function Sidebar({
   const [sortField, setSortField] = useState<SortField>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  // Dismissed ideas only appear under the Dismissed tab.
+  // Dismissed / screened ideas only appear under their own tab.
   const visible = useMemo(() => {
-    const base = filter === 'dismissed'
-      ? ideas.filter(i => i.status === 'dismissed')
-      : filter === 'all'
-        ? ideas.filter(i => i.status !== 'dismissed')
-        : ideas.filter(i => i.status !== 'dismissed' && i.status === filter)
+    const base = filter === 'all'
+      ? ideas.filter(i => !HIDDEN.includes(i.status))
+      : ideas.filter(i => i.status === filter)
 
     const dir = sortDir === 'asc' ? 1 : -1
     return [...base].sort((a, b) => {
@@ -61,9 +65,8 @@ export default function Sidebar({
   }, [ideas, filter, sortField, sortDir])
 
   const countFor = (value: IdeaStatus | 'all') => {
-    if (value === 'dismissed') return ideas.filter(i => i.status === 'dismissed').length
-    const live = ideas.filter(i => i.status !== 'dismissed')
-    return value === 'all' ? live.length : live.filter(i => i.status === value).length
+    if (value === 'all') return ideas.filter(i => !HIDDEN.includes(i.status)).length
+    return ideas.filter(i => i.status === value).length
   }
 
   const allChecked = visible.length > 0 && visible.every(i => checkedIds.has(i.id))

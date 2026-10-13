@@ -1,14 +1,42 @@
 export type IdeaStatus =
   | 'generated'
+  | 'screened_out'        // auto-gate: viability below threshold
   | 'selected_analysis'
   | 'analyzing'
   | 'analyzed'
+  | 'specing'             // drafting the one-page spec
+  | 'spec_ready'          // spec awaiting human approval / edits
+  | 'mocking'             // generating the clickable HTML mock
+  | 'mock_ready'          // mock awaiting advance / iterate / kill
   | 'selected_prototype'
   | 'prototyping'
   | 'prototyped'
   | 'dismissed'
 
+export const PROCESSING_STATUSES: readonly IdeaStatus[] = ['analyzing', 'specing', 'mocking', 'prototyping']
+
 export type Recommendation = 'go' | 'explore' | 'no-go'
+
+// Reconciled analysis verdict: what to actually do next, given analyst + VC.
+export type Verdict = 'advance' | 'validate-first' | 'kill'
+
+// One-page spec produced after analysis; the input to the mock stage.
+export interface Spec {
+  persona: string
+  job_to_be_done: string
+  wedge_feature: string
+  mvp_scope: string[]         // ≤ 3 features
+  out_of_scope: string[]
+  success_metric: string
+  kill_criteria: string
+  assumptions: string[]       // seeded from the VC's needs_to_be_true
+}
+
+export interface MockVersion {
+  version: number
+  path: string | null
+  created_at: string
+}
 
 // Who moved an idea between stages: a person in the UI, the pipeline itself,
 // or a model verdict (reserved for future auto-screening).
@@ -140,10 +168,13 @@ export interface Idea {
   analysis_stage: string | null
   analysis_error: string | null
   prototype_error: string | null
+  stage_error: string | null          // spec / mock failures
   analysis?: Analysis
   vc_review?: VcReview
   prototype?: Prototype
   decisions?: Decision[]
+  spec?: Spec & { version: number }
+  mock_versions?: MockVersion[]
 }
 
 export type FundVerdict = 'fund' | 'explore' | 'pass'
@@ -178,6 +209,9 @@ export interface Analysis {
   opportunities: string[] | null
   recommendation: Recommendation | null
   recommendation_rationale: string | null
+  verdict: Verdict | null
+  verdict_assumption: string | null
+  verdict_rationale: string | null
   tokens_used: number
   created_at: string
 }

@@ -15,6 +15,7 @@ interface GenerateConfig {
   isCustom: boolean
   dedupEnabled: boolean
   dedupThreshold: number
+  screenThreshold: number
 }
 
 const SECTORS = ['defense/gov', 'logistics', 'devtools/infra', 'healthcare', 'fintech', 'cybersecurity', 'hr/workforce', 'manufacturing', 'data/analytics', 'edtech', 'proptech', 'legaltech', 'energy/climate', 'retail']
@@ -247,6 +248,25 @@ export default function SettingsPanel({ onClose, onScoringSaved }: { onClose: ()
               />
             </div>
           )}
+        </div>
+
+        {/* Auto-screen gate */}
+        <div className="border-t border-zinc-800 pt-4">
+          <div className="flex justify-between items-baseline mb-1">
+            <span className="text-xs font-mono text-zinc-500">
+              Auto-screen threshold <span className="text-zinc-600">· new ideas below this viability are parked under Screened</span>
+            </span>
+            <span className="text-xs font-mono text-zinc-300">
+              {config.screenThreshold > 0 ? config.screenThreshold.toFixed(1) : 'off'}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0} max={8} step={0.5}
+            value={config.screenThreshold}
+            onChange={e => update({ screenThreshold: parseFloat(e.target.value) })}
+            className="w-full accent-zinc-400"
+          />
         </div>
 
         {/* Live prompt preview / editor */}

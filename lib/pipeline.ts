@@ -1,16 +1,57 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { getDb, logUsage, getConfig } from './db'
+import { getDb, logUsage, getConfig, addArtifact, getArtifact, getIdeaWithRelations } from './db'
 import {
   composeAnalyzePrompt,
   VC_SYSTEM,
+  VERDICT_SYSTEM,
+  SPEC_SYSTEM,
+  composeMockPrompt,
   PROTOTYPE_SYSTEM,
   getTodayDomain,
   composeGeneratePrompt,
   DEFAULT_GENERATE_CONFIG,
   type GenerateConfig,
 } from './prompts'
-import { writeSandbox } from './sandbox'
+import { writeSandbox, writeMockFile, slugify } from './sandbox'
 import { transition } from './stages'
+import type { Spec } from './types'
+
+const MODEL = 'claude-sonnet-4-6'
+
+function loadGenerateConfig(): GenerateConfig {
+  return { ...DEFAULT_GENERATE_CONFIG, ...getConfig<GenerateConfig>('generate', DEFAULT_GENERATE_CONFIG) }
+}
+
+// Pull a full HTML document out of a model response, tolerating a stray fence.
+// A missing </html> means the response was cut off (the mock's script lives at
+// the end of <body>, so a truncated page is a dead page): fail loudly rather
+// than save it.
+function extractHTML(text: string): string {
+  let s = text.trim()
+  const fence = s.match(/```(?:html)?\s*([\s\S]*?)```/)
+  if (fence) s = fence[1].trim()
+  const start = s.search(/<!doctype html|<html/i)
+  if (start === -1) throw new Error('No HTML document in model response')
+  const end = s.lastIndexOf('</html>')
+  if (end === -1) throw new Error('Mock HTML was truncated before </html> (response hit the token limit)')
+  return s.slice(start, end + '</html>'.length)
+}
+
+function ideaContextBlock(idea: Record<string, unknown>): string {
+  return [
+    `Title: ${idea.title}`,
+    `Tagline: ${idea.tagline}`,
+    `Problem: ${idea.problem}`,
+    `Solution: ${idea.solution}`,
+    `Market sector: ${idea.market_sector}`,
+    `Market audience: ${idea.market_audience}`,
+    `Business model: ${idea.business_model}`,
+    `Moat type: ${idea.moat_type}`,
+    `TAM estimate: ${idea.tam_estimate}`,
+    `Competitors: ${idea.named_competitors}`,
+    `Time to first revenue: ${idea.time_to_first_revenue}`,
+  ].join('\n')
+}
 import { computeViability, DEFAULT_SCORING, type ScoringConfig } from './scoring'
 import { semanticFilter } from './dedup'
 import { ideaEmbedText, toBlob } from './embeddings'
@@ -81,7 +122,7 @@ export async function runGenerate(domain?: string, count?: number) {
   const batchId = crypto.randomUUID()
   // Merge over defaults so configs saved before newer fields (e.g. dedup) still
   // get sane values rather than undefined.
-  const config = { ...DEFAULT_GENERATE_CONFIG, ...getConfig<GenerateConfig>('generate', DEFAULT_GENERATE_CONFIG) }
+  const config = loadGenerateConfig()
   const targetDomain = domain ?? getTodayDomain(config.domains)
   const targetCount = count ?? config.ideaCount ?? 15
   const now = new Date().toISOString()
@@ -105,7 +146,7 @@ export async function runGenerate(domain?: string, count?: number) {
 
   try {
     const msg = await getClient().messages.create({
-      model: 'claude-sonnet-4-6',
+      model: MODEL,
       max_tokens: 8192,
       system: systemPrompt,
       messages: [{ role: 'user', content: `Domain: ${targetDomain}\n\nGenerate exactly ${targetCount} ideas.` }],
@@ -151,6 +192,7 @@ export async function runGenerate(domain?: string, count?: number) {
     `)
 
     const num = (v: unknown) => (typeof v === 'number' ? v : null)
+    const inserted: { id: string; viability: number | null }[] = []
 
     db.transaction(() => {
       for (const { item: idea, vector } of kept) {
@@ -161,25 +203,42 @@ export async function runGenerate(domain?: string, count?: number) {
           appetite: num(idea.score_appetite),
           marketSize: num(idea.score_market_size),
         }
+        const id = crypto.randomUUID()
+        const viability = computeViability(sub, scoring)
         insert.run(
-          crypto.randomUUID(), batchId, targetDomain,
+          id, batchId, targetDomain,
           idea.title, idea.tagline, idea.problem, idea.solution,
           idea.market_sector, idea.market_audience, idea.business_model, idea.moat_type,
           idea.tam_estimate, JSON.stringify(idea.named_competitors ?? []),
           idea.time_to_first_revenue,
           sub.technical, sub.deployment, sub.barrier, sub.appetite, sub.marketSize,
-          computeViability(sub, scoring),
+          viability,
           vector ? toBlob(vector) : null,
           new Date().toISOString()
         )
+        inserted.push({ id, viability })
       }
     })()
+
+    // Auto-screen gate: park low-viability ideas out of the triage pile. They
+    // stay visible under their own filter and can be promoted back by hand.
+    const threshold = config.screenThreshold ?? 0
+    let screened = 0
+    if (threshold > 0) {
+      for (const { id, viability } of inserted) {
+        if (viability != null && viability < threshold) {
+          transition(id, 'screened_out', { actor: 'auto', reason: `viability ${viability} below screen threshold ${threshold}` })
+          screened++
+        }
+      }
+      if (screened > 0) console.log(`[generate] screened out ${screened} idea(s) below viability ${threshold}`)
+    }
 
     db.prepare(`UPDATE batches SET status='completed', ideas_count=?, tokens_used=?, completed_at=? WHERE id=?`)
       .run(kept.length, tokens, new Date().toISOString(), batchId)
 
     logUsage('generate', null, msg.usage.input_tokens, msg.usage.output_tokens)
-    return { batchId, count: kept.length }
+    return { batchId, count: kept.length, screened }
   } catch (err) {
     db.prepare(`UPDATE batches SET status='failed', error=?, completed_at=? WHERE id=?`)
       .run(err instanceof Error ? err.message : String(err), new Date().toISOString(), batchId)
@@ -207,26 +266,14 @@ export async function runAnalyze(ideaId: string) {
   if (!idea) throw new Error(`Idea ${ideaId} not found`)
 
   try {
-    const ideaContext = [
-      `Title: ${idea.title}`,
-      `Tagline: ${idea.tagline}`,
-      `Problem: ${idea.problem}`,
-      `Solution: ${idea.solution}`,
-      `Market sector: ${idea.market_sector}`,
-      `Market audience: ${idea.market_audience}`,
-      `Business model: ${idea.business_model}`,
-      `Moat type: ${idea.moat_type}`,
-      `TAM estimate: ${idea.tam_estimate}`,
-      `Competitors: ${idea.named_competitors}`,
-      `Time to first revenue: ${idea.time_to_first_revenue}`,
-    ].join('\n')
+    const ideaContext = ideaContextBlock(idea)
 
     // ── Agent 1: analyst ──
     // Founder profile comes from config so founder-fit reflects the actual user
     // without anyone's background living in the repo.
-    const { founderProfile } = { ...DEFAULT_GENERATE_CONFIG, ...getConfig<GenerateConfig>('generate', DEFAULT_GENERATE_CONFIG) }
+    const { founderProfile } = loadGenerateConfig()
     const analystMsg = await getClient().messages.create({
-      model: 'claude-sonnet-4-6',
+      model: MODEL,
       max_tokens: 8192,
       system: composeAnalyzePrompt(founderProfile),
       messages: [{ role: 'user', content: ideaContext }],
@@ -234,6 +281,7 @@ export async function runAnalyze(ideaId: string) {
     const analystText = analystMsg.content[0].type === 'text' ? analystMsg.content[0].text : ''
     const analysis = extractJSON(analystText) as Record<string, unknown>
     const analysisCreatedAt = new Date().toISOString()
+    const analysisId = crypto.randomUUID()
 
     db.prepare(`
       INSERT INTO analyses
@@ -242,7 +290,7 @@ export async function runAnalyze(ideaId: string) {
          risks, opportunities, recommendation, recommendation_rationale, tokens_used, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      crypto.randomUUID(), ideaId,
+      analysisId, ideaId,
       analysis.tam, analysis.sam, analysis.som,
       JSON.stringify(analysis.competitors ?? []),
       analysis.revenue_model, analysis.pricing_strategy,
@@ -267,12 +315,13 @@ export async function runAnalyze(ideaId: string) {
     ].join('\n')
 
     const vcMsg = await getClient().messages.create({
-      model: 'claude-sonnet-4-6',
+      model: MODEL,
       max_tokens: 4096,
       system: VC_SYSTEM,
       messages: [{ role: 'user', content: vcContext }],
     })
-    const vc = extractJSON(vcMsg.content[0].type === 'text' ? vcMsg.content[0].text : '') as Record<string, unknown>
+    const vcText = vcMsg.content[0].type === 'text' ? vcMsg.content[0].text : ''
+    const vc = extractJSON(vcText) as Record<string, unknown>
 
     db.prepare(`
       INSERT INTO vc_reviews
@@ -290,6 +339,19 @@ export async function runAnalyze(ideaId: string) {
     )
     logUsage('analyze', ideaId, vcMsg.usage.input_tokens, vcMsg.usage.output_tokens)
 
+    // ── Agent 3: reconciled verdict (the headline) ──
+    db.prepare(`UPDATE ideas SET analysis_stage='verdict' WHERE id=?`).run(ideaId)
+    const verdictMsg = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      system: VERDICT_SYSTEM,
+      messages: [{ role: 'user', content: ['THE IDEA:', ideaContext, '', "ANALYST:", analystText, '', 'VC:', vcText].join('\n') }],
+    })
+    const verdict = extractJSON(verdictMsg.content[0].type === 'text' ? verdictMsg.content[0].text : '') as Record<string, unknown>
+    db.prepare(`UPDATE analyses SET verdict=?, verdict_assumption=?, verdict_rationale=? WHERE id=?`)
+      .run(verdict.verdict ?? null, verdict.load_bearing_assumption ?? null, verdict.rationale ?? null, analysisId)
+    logUsage('analyze', ideaId, verdictMsg.usage.input_tokens, verdictMsg.usage.output_tokens)
+
     return transition(ideaId, 'analyzed', { actor: 'auto' })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -301,7 +363,134 @@ export async function runAnalyze(ideaId: string) {
   }
 }
 
-// ── Stage 5: Prototype ────────────────────────────────────────────────────────
+// ── Stage 4: Spec ─────────────────────────────────────────────────────────────
+
+// Gate + kickoff: analyzed | spec_ready -> specing. Throws TransitionError on
+// an illegal move so the route can answer 409 before any model call.
+export function startSpec(ideaId: string, actor: 'human' | 'auto' = 'human') {
+  transition(ideaId, 'specing', { actor })
+  void runSpec(ideaId).catch(err => console.error('[spec job]', err))
+}
+
+// One-page spec from idea + analysis + VC review. Stored as a versioned
+// artifact so human edits (PUT /spec) and redrafts sit side by side.
+export async function runSpec(ideaId: string) {
+  const db = getDb()
+  const idea = getIdeaWithRelations(ideaId) as (Record<string, unknown> & {
+    analysis?: Record<string, unknown>; vc_review?: Record<string, unknown>
+  }) | null
+  if (!idea) throw new Error(`Idea ${ideaId} not found`)
+
+  try {
+    const content = [
+      'THE IDEA:', ideaContextBlock(idea), '',
+      'ANALYSIS:', JSON.stringify(idea.analysis ?? {}, null, 1), '',
+      'VC REVIEW:', JSON.stringify(idea.vc_review ?? {}, null, 1),
+    ].join('\n')
+
+    const msg = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 2048,
+      system: SPEC_SYSTEM,
+      messages: [{ role: 'user', content }],
+    })
+    const spec = extractJSON(msg.content[0].type === 'text' ? msg.content[0].text : '') as Spec
+    if (!Array.isArray(spec.mvp_scope) || !spec.wedge_feature) throw new Error('Spec response missing required fields')
+    spec.mvp_scope = spec.mvp_scope.slice(0, 3)
+
+    addArtifact({ ideaId, stage: 'spec', kind: 'json', content: JSON.stringify(spec) })
+    logUsage('spec', ideaId, msg.usage.input_tokens, msg.usage.output_tokens)
+    return transition(ideaId, 'spec_ready', { actor: 'auto' })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[runSpec ${ideaId}]`, message)
+    transition(ideaId, 'analyzed', { actor: 'auto', reason: message })
+    return null
+  } finally {
+    void db
+  }
+}
+
+// Human edit of the current spec: a new artifact version, no model call.
+export function saveSpec(ideaId: string, spec: Spec) {
+  const current = getDb().prepare('SELECT status FROM ideas WHERE id = ?').get(ideaId) as { status: string } | undefined
+  if (!current) throw new Error(`Idea ${ideaId} not found`)
+  if (current.status !== 'spec_ready' && current.status !== 'mock_ready') {
+    throw new Error(`Spec can only be edited while spec_ready or mock_ready (idea is ${current.status})`)
+  }
+  const clean: Spec = {
+    persona: String(spec.persona ?? ''),
+    job_to_be_done: String(spec.job_to_be_done ?? ''),
+    wedge_feature: String(spec.wedge_feature ?? ''),
+    mvp_scope: (spec.mvp_scope ?? []).map(String).filter(Boolean).slice(0, 3),
+    out_of_scope: (spec.out_of_scope ?? []).map(String).filter(Boolean),
+    success_metric: String(spec.success_metric ?? ''),
+    kill_criteria: String(spec.kill_criteria ?? ''),
+    assumptions: (spec.assumptions ?? []).map(String).filter(Boolean),
+  }
+  addArtifact({ ideaId, stage: 'spec', kind: 'json', content: JSON.stringify(clean) })
+  return getIdeaWithRelations(ideaId)
+}
+
+// ── Stage 5: Mock ─────────────────────────────────────────────────────────────
+
+// Gate + kickoff. From spec_ready this is the approval; from mock_ready it is
+// an iteration and `feedback` is required so the next version has direction.
+export function startMock(ideaId: string, opts: { actor?: 'human' | 'auto'; feedback?: string } = {}) {
+  const actor = opts.actor ?? 'human'
+  const feedback = opts.feedback?.trim()
+  const status = (getDb().prepare('SELECT status FROM ideas WHERE id = ?').get(ideaId) as { status: string } | undefined)?.status
+  if (status === 'mock_ready' && !feedback) throw new Error('Iterating a mock needs feedback describing what to change')
+  transition(ideaId, 'mocking', { actor, reason: feedback ? 'iterate' : 'approve spec', note: feedback })
+  void runMock(ideaId, feedback).catch(err => console.error('[mock job]', err))
+}
+
+export async function runMock(ideaId: string, feedback?: string) {
+  const db = getDb()
+  const idea = db.prepare('SELECT id, title, tagline FROM ideas WHERE id = ?').get(ideaId) as { id: string; title: string; tagline: string | null } | undefined
+  if (!idea) throw new Error(`Idea ${ideaId} not found`)
+
+  try {
+    const spec = getArtifact(ideaId, 'spec', 'json')
+    if (!spec?.content) throw new Error('No spec to build a mock from')
+    const previous = feedback ? getArtifact(ideaId, 'mock', 'html') : undefined
+
+    const content = [
+      `PRODUCT: ${idea.title} — ${idea.tagline ?? ''}`, '',
+      'SPEC:', spec.content,
+      ...(previous?.content ? ['', 'PREVIOUS MOCK (HTML):', previous.content] : []),
+    ].join('\n')
+
+    // Tailwind-heavy markup is token-dense (~70 tokens/line), so a 300-line
+    // mock needs well over 8k output tokens. Budget generously and treat a
+    // max_tokens stop as a failure: a cut-off mock has no script and is dead.
+    const msg = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 20000,
+      system: composeMockPrompt(feedback),
+      messages: [{ role: 'user', content }],
+    })
+    if (msg.stop_reason === 'max_tokens') throw new Error('Mock generation hit the output token limit; tighten the spec or simplify the screens')
+    const html = extractHTML(msg.content[0].type === 'text' ? msg.content[0].text : '')
+
+    // Reserve the version first so the file name matches the artifact row.
+    const { next } = db.prepare(
+      `SELECT COALESCE(MAX(version), 0) + 1 AS next FROM artifacts WHERE idea_id = ? AND stage = 'mock' AND kind = 'html'`
+    ).get(ideaId) as { next: number }
+    const file = writeMockFile(slugify(idea.title), next, html)
+    addArtifact({ ideaId, stage: 'mock', kind: 'html', content: html, path: file })
+
+    logUsage('mock', ideaId, msg.usage.input_tokens, msg.usage.output_tokens)
+    return transition(ideaId, 'mock_ready', { actor: 'auto' })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[runMock ${ideaId}]`, message)
+    transition(ideaId, 'spec_ready', { actor: 'auto', reason: message })
+    return null
+  }
+}
+
+// ── Stage 6: Prototype ────────────────────────────────────────────────────────
 
 // Gate + kickoff, same shape as startAnalyze: synchronous transition (409 on
 // an illegal move), then the long model call runs detached.
@@ -339,7 +528,7 @@ export async function runPrototype(ideaId: string) {
     ].filter(Boolean).join('\n')
 
     const msg = await getClient().messages.create({
-      model: 'claude-sonnet-4-6',
+      model: MODEL,
       max_tokens: 16000,
       system: PROTOTYPE_SYSTEM,
       messages: [{ role: 'user', content: userContent }],
@@ -349,9 +538,8 @@ export async function runPrototype(ideaId: string) {
     const proto = extractJSON(text) as { files: Array<{ path: string; content: string; language: string }>; stack?: string[]; readme?: string }
     const tokens = msg.usage.input_tokens + msg.usage.output_tokens
 
-    const slug = (idea.title as string).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)
     const date = new Date().toISOString().slice(0, 10)
-    const dirPath = writeSandbox(`${date}-${slug}`, proto.files)
+    const dirPath = writeSandbox(`${date}-${slugify(idea.title as string)}`, proto.files)
 
     const completedAt = new Date().toISOString()
 

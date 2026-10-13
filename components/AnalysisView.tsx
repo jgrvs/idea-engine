@@ -1,5 +1,5 @@
 import type { Analysis } from '@/lib/types'
-import { RecommendationBadge } from './StatusBadge'
+import { RecommendationBadge, VerdictBadge } from './StatusBadge'
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
   const pct = Math.round((value / 10) * 100)
@@ -20,9 +20,28 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
 export default function AnalysisView({ analysis }: { analysis: Analysis }) {
   return (
     <div className="space-y-6">
-      {/* Recommendation */}
+      {/* Reconciled verdict: the headline. Analyst + VC are the supporting detail. */}
+      {analysis.verdict && (
+        <div className="bg-zinc-900 rounded p-4 space-y-2">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-mono text-zinc-500">Verdict</span>
+            <VerdictBadge verdict={analysis.verdict} />
+          </div>
+          {analysis.verdict_rationale && (
+            <p className="text-sm text-zinc-300">{analysis.verdict_rationale}</p>
+          )}
+          {analysis.verdict_assumption && (
+            <p className="text-xs font-mono text-zinc-400">
+              <span className="text-zinc-600">Load-bearing assumption · </span>{analysis.verdict_assumption}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Analyst recommendation */}
       <div className="flex items-start gap-4">
         <div>
+          <p className="text-xs font-mono text-zinc-500 mb-1.5">Analyst</p>
           {analysis.recommendation && (
             <RecommendationBadge rec={analysis.recommendation} />
           )}

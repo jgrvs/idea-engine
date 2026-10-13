@@ -68,6 +68,7 @@ function initSchema(db: Database.Database) {
       analysis_stage TEXT,
       analysis_error TEXT,
       prototype_error TEXT,
+      stage_error TEXT,
       embedding BLOB
     );
 
@@ -112,6 +113,9 @@ function initSchema(db: Database.Database) {
       opportunities TEXT,
       recommendation TEXT,
       recommendation_rationale TEXT,
+      verdict TEXT,
+      verdict_assumption TEXT,
+      verdict_rationale TEXT,
       tokens_used INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
@@ -184,10 +188,18 @@ function initSchema(db: Database.Database) {
   for (const col of ['score_technical', 'score_deployment', 'score_barrier', 'score_appetite', 'score_market_size']) {
     if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} REAL`)
   }
-  for (const col of ['analysis_stage', 'analysis_error', 'prototype_error']) {
+  for (const col of ['analysis_stage', 'analysis_error', 'prototype_error', 'stage_error']) {
     if (!ideaCols.has(col)) db.exec(`ALTER TABLE ideas ADD COLUMN ${col} TEXT`)
   }
   if (!ideaCols.has('embedding')) db.exec(`ALTER TABLE ideas ADD COLUMN embedding BLOB`)
+
+  // Migration: reconciled verdict columns on analyses.
+  const analysisCols = new Set(
+    (db.prepare(`PRAGMA table_info(analyses)`).all() as { name: string }[]).map(c => c.name)
+  )
+  for (const col of ['verdict', 'verdict_assumption', 'verdict_rationale']) {
+    if (!analysisCols.has(col)) db.exec(`ALTER TABLE analyses ADD COLUMN ${col} TEXT`)
+  }
 }
 
 // ── Embeddings (semantic dedup) ─────────────────────────────────────────────
@@ -321,6 +333,19 @@ export function getArtifacts(ideaId: string, stage?: string) {
     : db.prepare(`SELECT * FROM artifacts WHERE idea_id = ? ORDER BY stage, version DESC`).all(ideaId)
 }
 
+export interface ArtifactRow {
+  id: string; idea_id: string; stage: string; version: number; kind: string
+  content: string | null; path: string | null; created_at: string
+}
+
+// Latest artifact for (idea, stage, kind), or a specific version.
+export function getArtifact(ideaId: string, stage: string, kind: string, version?: number): ArtifactRow | undefined {
+  const db = getDb()
+  return version != null
+    ? db.prepare(`SELECT * FROM artifacts WHERE idea_id = ? AND stage = ? AND kind = ? AND version = ?`).get(ideaId, stage, kind, version) as ArtifactRow | undefined
+    : db.prepare(`SELECT * FROM artifacts WHERE idea_id = ? AND stage = ? AND kind = ? ORDER BY version DESC LIMIT 1`).get(ideaId, stage, kind) as ArtifactRow | undefined
+}
+
 export function getIdeaWithRelations(ideaId: string) {
   const db = getDb()
   const row = db.prepare('SELECT * FROM ideas WHERE id = ?').get(ideaId) as Record<string, unknown> | undefined
@@ -330,8 +355,13 @@ export function getIdeaWithRelations(ideaId: string) {
   const prototype = db.prepare('SELECT * FROM prototypes WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
   const vcReview = db.prepare('SELECT * FROM vc_reviews WHERE idea_id = ? ORDER BY created_at DESC LIMIT 1').get(ideaId) as Record<string, unknown> | undefined
   const decisions = db.prepare('SELECT * FROM decisions WHERE idea_id = ? ORDER BY created_at DESC LIMIT 50').all(ideaId) as Record<string, unknown>[]
+  const spec = getArtifact(ideaId, 'spec', 'json')
+  // Mock HTML is fetched on demand via GET /api/ideas/:id/mock; only list versions here.
+  const mocks = db.prepare(
+    `SELECT version, path, created_at FROM artifacts WHERE idea_id = ? AND stage = 'mock' AND kind = 'html' ORDER BY version DESC`
+  ).all(ideaId) as { version: number; path: string | null; created_at: string }[]
 
-  return deserializeIdea(row, analysis, prototype, vcReview, decisions)
+  return deserializeIdea(row, analysis, prototype, vcReview, decisions, spec, mocks)
 }
 
 export function deserializeIdea(
@@ -339,7 +369,9 @@ export function deserializeIdea(
   analysis?: Record<string, unknown>,
   prototype?: Record<string, unknown>,
   vcReview?: Record<string, unknown>,
-  decisions?: Record<string, unknown>[]
+  decisions?: Record<string, unknown>[],
+  spec?: ArtifactRow,
+  mocks?: { version: number; path: string | null; created_at: string }[]
 ) {
   const idea: Record<string, unknown> = {
     ...row,
@@ -390,6 +422,11 @@ export function deserializeIdea(
   }
 
   if (decisions) idea.decisions = decisions
+
+  if (spec?.content) {
+    try { idea.spec = { ...JSON.parse(spec.content), version: spec.version } } catch { /* ignore malformed */ }
+  }
+  if (mocks) idea.mock_versions = mocks
 
   return idea
 }

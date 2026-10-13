@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import type { Idea, IdeaStatus, KillReason } from '@/lib/types'
+import { PROCESSING_STATUSES, type Idea, type IdeaStatus, type KillReason, type Spec } from '@/lib/types'
 import Sidebar from '@/components/Sidebar'
 import IdeaDetail from '@/components/IdeaDetail'
 import SettingsPanel from '@/components/SettingsPanel'
@@ -72,7 +72,7 @@ export default function Home() {
     fetchIdeas()
   }, [fetchHealth, fetchIdeas])
 
-  const hasProcessing = ideas.some(i => i.status === 'analyzing' || i.status === 'prototyping')
+  const hasProcessing = ideas.some(i => PROCESSING_STATUSES.includes(i.status))
   useEffect(() => {
     if (!hasProcessing) return
     const t = setInterval(fetchIdeas, 4000)
@@ -91,7 +91,7 @@ export default function Home() {
       const res = await fetch('/api/generate', { method: 'POST' })
       const body = await res.json()
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-      addLog('ok', `Generated ${body.count} ideas (batch ${body.batchId?.slice(0, 8)})`)
+      addLog('ok', `Generated ${body.count} ideas${body.screened ? `, ${body.screened} screened out` : ''} (batch ${body.batchId?.slice(0, 8)})`)
       await fetchIdeas()
     } catch (e) {
       addLog('error', e instanceof Error ? e.message : 'Generation failed')
@@ -119,19 +119,44 @@ export default function Home() {
     }
   }
 
-  const handlePrototype = async (id: string) => {
-    // Background job like analyze: the route returns once the `prototyping`
-    // transition is recorded; polling picks up the built/failed state.
-    setIdeas(prev => prev.map(i => i.id === id ? { ...i, status: 'prototyping' as IdeaStatus, prototype_error: null } : i))
-    addLog('info', `Building prototype for ${id.slice(0, 8)}…`)
+  // Background stage jobs share one shape: optimistic status, POST, then let
+  // polling pick up the completed/failed state. The route answers 409 if the
+  // idea isn't at the right gate, which surfaces in the log.
+  const startStage = async (id: string, stage: 'spec' | 'mock' | 'prototype', optimistic: IdeaStatus, body?: unknown) => {
+    setIdeas(prev => prev.map(i => i.id === id ? { ...i, status: optimistic, stage_error: null, prototype_error: null } : i))
+    addLog('info', `${stage[0].toUpperCase() + stage.slice(1)} started for ${id.slice(0, 8)}…`)
     try {
-      const res = await fetch(`/api/ideas/${id}/prototype`, { method: 'POST' })
+      const res = await fetch(`/api/ideas/${id}/${stage}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+      })
       if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`)
       setTimeout(fetchIdeas, 1500)
     } catch (e) {
-      addLog('error', `Could not start prototype: ${e instanceof Error ? e.message : e}`)
+      addLog('error', `Could not start ${stage}: ${e instanceof Error ? e.message : e}`)
       await fetchIdeas()
     }
+  }
+
+  const handleSpec = (id: string) => startStage(id, 'spec', 'specing')
+  const handleMock = (id: string, feedback?: string) => startStage(id, 'mock', 'mocking', feedback ? { feedback } : undefined)
+  const handlePrototype = (id: string) => startStage(id, 'prototype', 'prototyping')
+
+  const handleSaveSpec = async (id: string, spec: Spec): Promise<boolean> => {
+    const res = await fetch(`/api/ideas/${id}/spec`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spec),
+    })
+    if (res.ok) {
+      const updated = await res.json()
+      setIdeas(prev => prev.map(i => i.id === id ? updated : i))
+      addLog('ok', `Spec saved as v${updated.spec?.version ?? '?'}`)
+      return true
+    }
+    addLog('error', (await res.json().catch(() => ({}))).error ?? `Spec save failed (HTTP ${res.status})`)
+    return false
   }
 
   // Returns true on success so callers can chain (e.g. queue then build).
@@ -343,6 +368,9 @@ export default function Home() {
             <IdeaDetail
               idea={selectedIdea}
               onAnalyze={() => handleAnalyze(selectedIdea.id)}
+              onSpec={() => handleSpec(selectedIdea.id)}
+              onMock={feedback => handleMock(selectedIdea.id, feedback)}
+              onSaveSpec={spec => handleSaveSpec(selectedIdea.id, spec)}
               onPrototype={() => handlePrototype(selectedIdea.id)}
               onStatusUpdate={(status, reason, note) => handleStatusUpdate(selectedIdea.id, status, reason, note)}
             />

@@ -37,3 +37,19 @@ export function writeSandbox(dirName: string, files: PrototypeFile[]): string {
 export function ensureSandboxExists() {
   fs.mkdirSync(path.resolve(SANDBOX_BASE), { recursive: true })
 }
+
+export function slugify(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'idea'
+}
+
+// Mocks live beside the eventual prototype: <sandbox>/<slug>/mock-v<N>.html.
+// Versions are kept side by side so an iteration never overwrites its parent.
+export function writeMockFile(slug: string, version: number, html: string): string {
+  const sandboxDir = path.resolve(SANDBOX_BASE)
+  const dir = path.join(sandboxDir, slugify(slug))
+  if (!dir.startsWith(sandboxDir + path.sep)) throw new Error(`Sandbox escape attempt: ${dir}`)
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `mock-v${version}.html`)
+  fs.writeFileSync(file, html, 'utf-8')
+  return file
+}

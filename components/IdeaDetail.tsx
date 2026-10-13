@@ -1,11 +1,19 @@
 'use client'
 
 import { useState } from 'react'
-import type { Decision, Idea, IdeaStatus, KillReason, VcReview } from '@/lib/types'
+import { PROCESSING_STATUSES, type Decision, type Idea, type IdeaStatus, type KillReason, type Spec, type VcReview } from '@/lib/types'
 import { StatusBadge } from './StatusBadge'
 import AnalysisView from './AnalysisView'
 import PrototypeView from './PrototypeView'
+import SpecView from './SpecView'
+import MockView from './MockView'
 import KillReasonPicker from './KillReasonPicker'
+
+const FUND_STYLE: Record<string, string> = {
+  fund: 'bg-green-950 text-green-400 border-green-900',
+  explore: 'bg-yellow-950 text-yellow-400 border-yellow-900',
+  pass: 'bg-red-950 text-red-400 border-red-900',
+}
 
 const ACTOR_STYLE: Record<string, string> = {
   human: 'text-blue-400',
@@ -13,31 +21,12 @@ const ACTOR_STYLE: Record<string, string> = {
   model: 'text-amber-400',
 }
 
-// Compact audit trail from the decisions table: who moved the idea, where, why.
-function DecisionLog({ decisions }: { decisions: Decision[] }) {
-  if (!decisions.length) return null
-  return (
-    <div>
-      <p className="text-xs font-mono text-zinc-500 mb-2">History</p>
-      <ul className="space-y-1">
-        {decisions.map(d => (
-          <li key={d.id} className="text-xs font-mono text-zinc-500 flex gap-2 items-baseline">
-            <span className="text-zinc-700 shrink-0">{new Date(d.created_at).toLocaleString()}</span>
-            <span className="text-zinc-400">{d.from_status} → {d.to_status}</span>
-            <span className={ACTOR_STYLE[d.actor] ?? 'text-zinc-500'}>{d.actor}</span>
-            {d.reason && <span className="text-zinc-500 truncate">· {d.reason}{d.note ? `: ${d.note}` : ''}</span>}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-const FUND_STYLE: Record<string, string> = {
-  fund: 'bg-green-950 text-green-400 border-green-900',
-  explore: 'bg-yellow-950 text-yellow-400 border-yellow-900',
-  pass: 'bg-red-950 text-red-400 border-red-900',
-}
+const BTN = 'text-sm font-mono px-4 py-2 rounded border transition-colors'
+const BTN_BLUE = `${BTN} border-blue-900 text-blue-400 hover:bg-blue-950`
+const BTN_CYAN = `${BTN} border-cyan-900 text-cyan-300 hover:bg-cyan-950`
+const BTN_TEAL = `${BTN} border-teal-900 text-teal-300 hover:bg-teal-950`
+const BTN_PURPLE = `${BTN} border-purple-900 text-purple-400 hover:bg-purple-950`
+const BTN_GREY = `${BTN} border-zinc-700 text-zinc-400 hover:bg-zinc-900`
 
 function VcList({ label, items, marker }: { label: string; items: string[] | null; marker: string }) {
   if (!items || items.length === 0) return null
@@ -84,9 +73,48 @@ function VcReviewView({ review }: { review: VcReview }) {
   )
 }
 
+// Compact audit trail from the decisions table: who moved the idea, where, why.
+function DecisionLog({ decisions }: { decisions: Decision[] }) {
+  if (!decisions.length) return null
+  return (
+    <div>
+      <p className="text-xs font-mono text-zinc-500 mb-2">History</p>
+      <ul className="space-y-1">
+        {decisions.map(d => (
+          <li key={d.id} className="text-xs font-mono text-zinc-500 flex gap-2 items-baseline">
+            <span className="text-zinc-700 shrink-0">{new Date(d.created_at).toLocaleString()}</span>
+            <span className="text-zinc-400">{d.from_status} → {d.to_status}</span>
+            <span className={ACTOR_STYLE[d.actor] ?? 'text-zinc-500'}>{d.actor}</span>
+            {d.reason && <span className="text-zinc-500 truncate">· {d.reason}{d.note ? `: ${d.note}` : ''}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ErrorBanner({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
+  return (
+    <div className="mb-6 rounded border border-red-900 bg-red-950/40 px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-mono text-red-400 mb-1">{title}</p>
+          <p className="text-xs font-mono text-red-300/80 break-words">{message}</p>
+        </div>
+        <button onClick={onRetry} className="shrink-0 text-xs font-mono px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950 transition-colors">
+          ↻ Retry
+        </button>
+      </div>
+    </div>
+  )
+}
+
 interface Props {
   idea: Idea
   onAnalyze: () => void
+  onSpec: () => void
+  onMock: (feedback?: string) => void
+  onSaveSpec: (spec: Spec) => Promise<boolean>
   onPrototype: () => void
   // Resolves true when the server accepted the move; false on a gate rejection.
   onStatusUpdate: (status: IdeaStatus | 'restore', reason?: KillReason, note?: string) => Promise<boolean>
@@ -130,16 +158,36 @@ function ScoreBreakdown({ idea }: { idea: Idea }) {
   )
 }
 
-export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdate }: Props) {
-  const [tab, setTab] = useState<'brief' | 'analysis' | 'prototype'>('brief')
+const PROCESSING_TEXT: Partial<Record<IdeaStatus, string>> = {
+  specing: '⟳ Drafting the one-page spec…',
+  mocking: '⟳ Building the clickable mock…',
+  prototyping: '⟳ Building prototype…',
+}
+
+type Tab = 'brief' | 'analysis' | 'spec' | 'mock' | 'prototype'
+
+export default function IdeaDetail({ idea, onAnalyze, onSpec, onMock, onSaveSpec, onPrototype, onStatusUpdate }: Props) {
+  const [tab, setTab] = useState<Tab>('brief')
   const [dismissOpen, setDismissOpen] = useState(false)
+  const [iterateOpen, setIterateOpen] = useState(false)
+  const [feedback, setFeedback] = useState('')
 
-  const isProcessing = idea.status === 'analyzing' || idea.status === 'prototyping'
+  const isProcessing = PROCESSING_STATUSES.includes(idea.status)
+  const hasMock = (idea.mock_versions?.length ?? 0) > 0
 
-  // From `analyzed`, building means: pass the select gate, then start the job.
-  const queueAndBuild = async () => {
-    const ok = await onStatusUpdate('selected_prototype')
-    if (ok) onPrototype()
+  const tabEnabled: Record<Tab, boolean> = {
+    brief: true,
+    analysis: !!idea.analysis,
+    spec: !!idea.spec,
+    mock: hasMock,
+    prototype: !!idea.prototype,
+  }
+
+  const submitIterate = () => {
+    if (!feedback.trim()) return
+    onMock(feedback.trim())
+    setFeedback('')
+    setIterateOpen(false)
   }
 
   return (
@@ -169,46 +217,25 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
         )}
       </div>
 
-      {/* Analysis error banner */}
+      {/* Error banners (one per stage that can fail) */}
       {idea.analysis_error && idea.status !== 'analyzing' && (
-        <div className="mb-6 rounded border border-red-900 bg-red-950/40 px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-mono text-red-400 mb-1">Analysis failed</p>
-              <p className="text-xs font-mono text-red-300/80 break-words">{idea.analysis_error}</p>
-            </div>
-            <button
-              onClick={onAnalyze}
-              className="shrink-0 text-xs font-mono px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950 transition-colors"
-            >
-              ↻ Retry
-            </button>
-          </div>
-        </div>
+        <ErrorBanner title="Analysis failed" message={idea.analysis_error} onRetry={onAnalyze} />
       )}
-
-      {/* Prototype error banner */}
+      {idea.stage_error && !isProcessing && (
+        <ErrorBanner
+          title={idea.status === 'spec_ready' ? 'Mock failed' : 'Spec failed'}
+          message={idea.stage_error}
+          onRetry={idea.status === 'spec_ready' ? () => onMock() : onSpec}
+        />
+      )}
       {idea.prototype_error && idea.status !== 'prototyping' && (
-        <div className="mb-6 rounded border border-red-900 bg-red-950/40 px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-mono text-red-400 mb-1">Prototype failed</p>
-              <p className="text-xs font-mono text-red-300/80 break-words">{idea.prototype_error}</p>
-            </div>
-            <button
-              onClick={onPrototype}
-              className="shrink-0 text-xs font-mono px-3 py-1.5 rounded border border-red-800 text-red-300 hover:bg-red-950 transition-colors"
-            >
-              ↻ Retry
-            </button>
-          </div>
-        </div>
+        <ErrorBanner title="Prototype failed" message={idea.prototype_error} onRetry={onPrototype} />
       )}
 
       {/* Tab nav */}
       <div className="flex gap-1 border-b border-zinc-800 mb-6">
-        {(['brief', 'analysis', 'prototype'] as const).map(t => {
-          const disabled = (t === 'analysis' && !idea.analysis) || (t === 'prototype' && !idea.prototype)
+        {(['brief', 'analysis', 'spec', 'mock', 'prototype'] as const).map(t => {
+          const disabled = !tabEnabled[t]
           return (
             <button
               key={t}
@@ -264,70 +291,101 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
         </div>
       )}
 
+      {tab === 'spec' && idea.spec && (
+        <SpecView
+          key={idea.spec.version}
+          spec={idea.spec}
+          editable={idea.status === 'spec_ready' || idea.status === 'mock_ready'}
+          onSave={onSaveSpec}
+        />
+      )}
+
+      {tab === 'mock' && hasMock && (
+        <MockView ideaId={idea.id} versions={idea.mock_versions ?? []} />
+      )}
+
       {tab === 'prototype' && idea.prototype && (
         <PrototypeView prototype={idea.prototype} />
       )}
 
-      {/* Actions */}
+      {/* Actions: one row per gate the idea is currently parked at */}
       {!isProcessing && idea.status !== 'dismissed' && (
-        <div className="mt-8 pt-6 border-t border-zinc-800 flex flex-wrap gap-2">
-          {idea.status === 'generated' && (
-            <button
-              onClick={() => onStatusUpdate('selected_analysis')}
-              className="text-sm font-mono px-4 py-2 rounded border border-blue-900 text-blue-400 hover:bg-blue-950 transition-colors"
-            >
-              Send to Analysis →
-            </button>
-          )}
-          {idea.status === 'analyzed' && (
-            <>
-              <button
-                onClick={onAnalyze}
-                className="text-sm font-mono px-4 py-2 rounded border border-zinc-700 text-zinc-400 hover:bg-zinc-900 transition-colors"
-              >
-                Re-analyze
-              </button>
-              <button
-                onClick={queueAndBuild}
-                className="text-sm font-mono px-4 py-2 rounded border border-purple-900 text-purple-400 hover:bg-purple-950 transition-colors"
-              >
-                Build Prototype →
-              </button>
-            </>
-          )}
-          {idea.status === 'selected_analysis' && (
-            <button
-              onClick={onAnalyze}
-              className="text-sm font-mono px-4 py-2 rounded border border-blue-900 text-blue-400 hover:bg-blue-950 transition-colors"
-            >
-              Run Analysis →
-            </button>
-          )}
-          {idea.status === 'selected_prototype' && (
-            <button
-              onClick={onPrototype}
-              className="text-sm font-mono px-4 py-2 rounded border border-purple-900 text-purple-400 hover:bg-purple-950 transition-colors"
-            >
-              Build Prototype →
-            </button>
-          )}
-
-          {/* Dismiss */}
-          {!dismissOpen ? (
-            <button
-              onClick={() => setDismissOpen(true)}
-              className="text-sm font-mono px-4 py-2 rounded border border-zinc-800 text-zinc-600 hover:text-zinc-400 transition-colors ml-auto"
-            >
-              Dismiss
-            </button>
-          ) : (
-            <div className="ml-auto">
-              <KillReasonPicker
-                onConfirm={(reason, note) => { setDismissOpen(false); onStatusUpdate('dismissed', reason, note) }}
-                onCancel={() => setDismissOpen(false)}
+        <div className="mt-8 pt-6 border-t border-zinc-800 space-y-3">
+          {idea.status === 'mock_ready' && iterateOpen && (
+            <div className="space-y-2">
+              <p className="text-xs font-mono text-zinc-500">What should change in the next version?</p>
+              <textarea
+                value={feedback}
+                onChange={e => setFeedback(e.target.value)}
+                rows={3}
+                placeholder="e.g. The first screen should be the queue, not a dashboard. Drop the settings page."
+                className="w-full text-sm font-sans bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-600 resize-y"
               />
+              <div className="flex gap-3">
+                <button onClick={submitIterate} disabled={!feedback.trim()} className={`${BTN_TEAL} disabled:opacity-40`}>
+                  Generate v{(idea.mock_versions?.[0]?.version ?? 0) + 1} →
+                </button>
+                <button onClick={() => setIterateOpen(false)} className="text-xs font-mono text-zinc-600 hover:text-zinc-400">Cancel</button>
+              </div>
             </div>
           )}
+
+          <div className="flex flex-wrap gap-2">
+            {idea.status === 'generated' && (
+              <button onClick={() => onStatusUpdate('selected_analysis')} className={BTN_BLUE}>Send to Analysis →</button>
+            )}
+            {idea.status === 'screened_out' && (
+              <button onClick={() => onStatusUpdate('generated')} className={BTN_GREY}>↑ Promote to New</button>
+            )}
+            {idea.status === 'selected_analysis' && (
+              <button onClick={onAnalyze} className={BTN_BLUE}>Run Analysis →</button>
+            )}
+            {idea.status === 'analyzed' && (
+              <>
+                <button onClick={onAnalyze} className={BTN_GREY}>Re-analyze</button>
+                <button onClick={onSpec} className={BTN_CYAN}>Draft spec →</button>
+              </>
+            )}
+            {idea.status === 'spec_ready' && (
+              <>
+                <button onClick={onSpec} className={BTN_GREY}>Redraft spec</button>
+                <button onClick={() => onMock()} className={BTN_TEAL}>Approve spec &amp; build mock →</button>
+              </>
+            )}
+            {idea.status === 'mock_ready' && !iterateOpen && (
+              <>
+                <button onClick={() => onStatusUpdate('spec_ready')} className={BTN_GREY}>← Back to spec</button>
+                <button onClick={() => setIterateOpen(true)} className={BTN_GREY}>Iterate mock…</button>
+                <button onClick={() => onStatusUpdate('selected_prototype')} className={BTN_PURPLE}>Advance to prototype →</button>
+              </>
+            )}
+            {idea.status === 'selected_prototype' && (
+              <>
+                {hasMock && <button onClick={() => onStatusUpdate('mock_ready')} className={BTN_GREY}>← Back to mock</button>}
+                <button onClick={onPrototype} className={BTN_PURPLE}>Build Prototype →</button>
+              </>
+            )}
+            {idea.status === 'prototyped' && (
+              <button onClick={() => onStatusUpdate('selected_prototype')} className={BTN_GREY}>Rebuild prototype</button>
+            )}
+
+            {/* Dismiss */}
+            {!dismissOpen ? (
+              <button
+                onClick={() => setDismissOpen(true)}
+                className="text-sm font-mono px-4 py-2 rounded border border-zinc-800 text-zinc-600 hover:text-zinc-400 transition-colors ml-auto"
+              >
+                Dismiss
+              </button>
+            ) : (
+              <div className="ml-auto">
+                <KillReasonPicker
+                  onConfirm={(reason, note) => { setDismissOpen(false); onStatusUpdate('dismissed', reason, note) }}
+                  onCancel={() => setDismissOpen(false)}
+                />
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -335,27 +393,25 @@ export default function IdeaDetail({ idea, onAnalyze, onPrototype, onStatusUpdat
         <div className="mt-8 pt-6 border-t border-zinc-800">
           <p className="text-sm font-mono text-amber-400">
             {idea.status === 'analyzing'
-              ? idea.analysis_stage === 'vc'
-                ? '⟳ VC review — pressure-testing the analysis…'
-                : '⟳ Analyst — researching market, competitors, feasibility…'
-              : '⟳ Building prototype…'}
+              ? idea.analysis_stage === 'verdict'
+                ? '⟳ Verdict — reconciling analyst and VC…'
+                : idea.analysis_stage === 'vc'
+                  ? '⟳ VC review — pressure-testing the analysis…'
+                  : '⟳ Analyst — researching market, competitors, feasibility…'
+              : PROCESSING_TEXT[idea.status] ?? '⟳ Working…'}
           </p>
           {idea.status === 'analyzing' && (
             <div className="flex gap-2 mt-3">
-              {(['analyst', 'vc'] as const).map(s => (
-                <span
-                  key={s}
-                  className={`text-xs font-mono px-2 py-0.5 rounded ${
-                    idea.analysis_stage === s
-                      ? 'bg-amber-950 text-amber-400'
-                      : (s === 'analyst' && idea.analysis_stage === 'vc')
-                        ? 'bg-green-950 text-green-500'
-                        : 'bg-zinc-900 text-zinc-600'
-                  }`}
-                >
-                  {s === 'analyst' ? '1 · Analyst' : '2 · VC review'}
-                </span>
-              ))}
+              {(['analyst', 'vc', 'verdict'] as const).map((s, i) => {
+                const order = ['analyst', 'vc', 'verdict']
+                const cur = order.indexOf(idea.analysis_stage ?? 'analyst')
+                const cls = i === cur ? 'bg-amber-950 text-amber-400' : i < cur ? 'bg-green-950 text-green-500' : 'bg-zinc-900 text-zinc-600'
+                return (
+                  <span key={s} className={`text-xs font-mono px-2 py-0.5 rounded ${cls}`}>
+                    {i + 1} · {s === 'vc' ? 'VC review' : s[0].toUpperCase() + s.slice(1)}
+                  </span>
+                )
+              })}
             </div>
           )}
         </div>
